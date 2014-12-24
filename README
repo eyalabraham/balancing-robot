@@ -1,0 +1,48 @@
+/* 
+ * these programs are the control programs for a 2-wheel balancing robot.
+ * the robot is controlled by a RaspberryPi connected to an ATmega328P.
+ *
+ * RPi: reads IMU tilt/gyro sensor (I2C interface), and
+ *      runs a PID algorithm to control 2 servo motors via PWM
+ * AVR: RaspberryPi sends PWN setting commands via I2C to AVR, and
+ *      AVR controls motors.
+ *      AVR read switches and ADC and forwards to RPi upon request.
+ *
+ *                               +-----------+
+ *                  +------------+ MPU-6050A |
+ * +-----+          |  +-----+   +-----------+
+ * |     |          |  |     |
+ * | RPi +--< I2C >-+--+ AVR |
+ * |     |             |     |
+ * +-----+             +--+--+
+ *                        |
+ *              2x PWM channels to Servo
+ *
+ * ATmega AVR IO
+ * ---------------
+ * right motor PWM          OC0A        pin 12      out
+ * right motor direction    PB0..PB1    pin 14..15  out
+ * left motor PWM           OC0B        pin 11      out
+ * left motor direction     PB2..PB3    pin 16..16  out
+ * go/no-go select          PB4         pin 18      in
+ * Batt low/ok              PB5         pin 19      out
+ * run/not-run              PB6         pin 9       out
+ * TWI                      SCL         pin 28      out
+ * TWI                      SDA         pin 27      in/out
+ * Batt sense               ADC0        pin 23      analog in
+ *
+ * Port B bit assignment
+ *
+ * b7 b6 b5 b4 b3 b2 b1 b0
+ * |  |  |  |  |  |  |  |
+ * |  |  |  |  |  |  |  +--- 'o' right motor dir \ 0, 3=stop, 1=fwd, 2=rev
+ * |  |  |  |  |  |  +------ 'o' right motor dir /
+ * |  |  |  |  |  +--------- 'o' left motor dir  \ 0, 3=stop, 1=fwd, 2=rev
+ * |  |  |  |  +------------ 'o' left motor dir  /
+ * |  |  |  +--------------- 'i' go/no-go          PUP enabled, 0=no-go, 1=go
+ * |  |  +------------------ 'o' batt. ok/low      0=batt.ok,1=batt.low (red LED)
+ * |  +--------------------- 'o' run/not-run       0=not running,1=running (green LED)
+ * +------------------------ 'o' cycle test point
+ *
+ * note: all references to data sheet are for ATmega 328P Rev. 8161D–AVR–10/09
+ */
