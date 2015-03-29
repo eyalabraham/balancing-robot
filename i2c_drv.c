@@ -11,14 +11,14 @@
 *
 *****************************************************************************/
 
-#include	<stdint.h>
-#include	<string.h>
-#include	<avr/io.h>
-#include	<avr/interrupt.h>
-#include	<util/twi.h>
-#include	<avr/cpufunc.h>
+#include    <stdint.h>
+#include    <string.h>
+#include    <avr/io.h>
+#include    <avr/interrupt.h>
+#include    <util/twi.h>
+#include    <avr/cpufunc.h>
 
-#include	"i2c_drv.h"
+#include    "i2c_drv.h"
 
 /****************************************************************************
   TWI State codes
@@ -62,26 +62,235 @@
 #define TWI_NO_STATE               0xF8  // No relevant state information available; TWINT = '0'
 #define TWI_BUS_ERROR              0x00  // Bus error due to an illegal START or STOP condition
 
-#define	setTWCR(sta,sto,intr,ea)	(((intr)<<TWINT)|	\
-									 ((ea)<<TWEA)|		\
-									 ((sta)<<TWSTA)|	\
-									 ((sto)<<TWSTO)|	\
-									 (0<<TWWC)|			\
-									 (1<<TWEN)|			\
-									 (1<<TWIE))
+// TWCR bit set/reset macro
+#define set_s_TWCR(sta,sto,intr,ea) (((intr)<<TWINT)|   \
+                                     ((ea)<<TWEA)|      \
+                                     ((sta)<<TWSTA)|    \
+                                     ((sto)<<TWSTO)|    \
+                                     (0<<TWWC)|         \
+                                     (1<<TWEN)|         \
+                                     (1<<TWIE))
+
+#define set_m_TWCR(sta,sto,intr,ea) (((intr)<<TWINT)|   \
+                                     ((ea)<<TWEA)|      \
+                                     ((sta)<<TWSTA)|    \
+                                     ((sto)<<TWSTO)|    \
+                                     (0<<TWWC)|         \
+                                     (1<<TWEN)|         \
+                                     (0<<TWIE))
 
 /****************************************************************************
   Globals
 ****************************************************************************/
-static	volatile uint8_t	i2c_genCallActive = 0;
-static	volatile uint8_t	i2c_rx_busy       = 0;   // busy receiving
-static	volatile uint8_t	i2c_tx_busy       = 0;   // busy transmitting
-static	volatile uint8_t	rxIndex           = 0;   // index to data in rxBuffers
-static	volatile uint8_t	txIndex           = 0;   // index to data in txBuffers
-static           uint8_t	txDataCount       = 0;   // bytes to transmit
+static  volatile uint8_t    i2c_genCallActive = 0;
+static  volatile uint8_t    i2c_rx_busy       = 0;   // busy receiving
+static  volatile uint8_t    i2c_tx_busy       = 0;   // busy transmitting
+static  volatile uint8_t    rxIndex           = 0;   // index to data in rxBuffers
+static  volatile uint8_t    txIndex           = 0;   // index to data in txBuffers
+static           uint8_t    txDataCount       = 0;   // bytes to transmit
 
-static	uint8_t rxBuffer[TWI_BUFF_LEN];              // receive data buffer, from SLA+W transaction
-static	uint8_t txBuffer[TWI_BUFF_LEN];              // transmit data buffer, for SLA+R transaction
+static  uint8_t rxBuffer[TWI_BUFF_LEN];              // receive data buffer
+static  uint8_t txBuffer[TWI_BUFF_LEN];              // transmit data buffer
+
+/* ---------------------------------------------------------------------------
+ * i2c_m_initialize()
+ *
+ * setup SCL clock rate for master mode
+ *
+ */
+void i2c_m_initialize(void)
+{
+    TWBR = 12;  // rate divisor to yield 100KHz SCL @ 4MHz CPU clock
+    TWSR = 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * i2c_m_getData()
+ *
+ * implement a Master Receive mode using a polling method.
+ * data is passed in with 'data' buffer from slave 'address'.
+ * function returns data bytes received or -1 on error.
+ *
+ */
+int i2c_m_getData(uint8_t address, uint8_t *data, uint8_t byteCount)
+{
+    uint8_t slaveAddress;
+    uint8_t rxIndex;
+
+    if ( byteCount > TWI_BUFF_LEN )
+        return -1;
+
+    slaveAddress = (address << 1) + TW_READ;
+    rxIndex = 0;
+
+    TWCR = (1<<TWEN)|                       // enable TWI-interface
+           (0<<TWIE)|(1<<TWINT)|            // clear INT flag
+           (0<<TWEA)|(1<<TWSTA)|(0<<TWSTO)| // send s START condition
+           (0<<TWWC);
+
+MASTER_RX_LOOP:
+    while ((TWCR & _BV(TWINT)) == 0);       // wait for transmission
+
+    switch (TWSR)
+    {
+    /*
+     * Master Receive Modes
+     */
+    case TWI_START:                     // -- 0x08
+    case TWI_REP_START:                 // -- 0x10
+        TWDR = slaveAddress;            // send SLA+R
+        TWCR = set_m_TWCR(0, 0, 1, 0);
+        goto MASTER_RX_LOOP;
+        break;
+
+    case TWI_ARB_LOST:                  // -- 0x38
+        TWCR = set_m_TWCR(1, 0, 1, 0);  // START condition will be transmitted when the bus becomes free
+        goto MASTER_RX_LOOP;
+        break;
+
+    case TWI_MRX_ADR_ACK:               // -- 0x40
+        if ( rxIndex < (byteCount-1))
+            TWCR = set_m_TWCR(0, 0, 1, 1); // next data byte will be received and ACK will be returned
+        else
+            TWCR = set_m_TWCR(0, 0, 1, 0); // next data byte will be received and NACK will be returned
+        goto MASTER_RX_LOOP;
+        break;
+
+    case TWI_MRX_DATA_ACK:              // -- 0x50
+        rxBuffer[rxIndex++] = TWDR;     // read byte from TWDR
+        if ( rxIndex < (byteCount-1))      // check if there is room in the buffer
+            TWCR = set_m_TWCR(0, 0, 1, 1); // yes, data byte will be received and ACK will be returned
+        else
+            TWCR = set_m_TWCR(0, 0, 1, 0); // room for one more byte is left in the buffer,
+                                           // next data byte will be received but NACK will be returned (-> status 0x58)
+        goto MASTER_RX_LOOP;
+        break;
+
+    case TWI_MRX_DATA_NACK:             // -- 0x58
+        rxBuffer[rxIndex++] = TWDR;     // read last byte from TWDR
+        /* no break */
+    case TWI_MRX_ADR_NACK:              // -- 0x48
+        TWCR = set_m_TWCR(0, 1, 1, 0);  // STOP condition will be transmitted and TWSTO Flag will be reset
+
+        memcpy((void*)data, (const void*)rxBuffer, rxIndex);
+        return rxIndex;
+        break;
+
+    default:
+        TWCR = set_m_TWCR(0, 1, 1, 0);  // STOP condition will be transmitted and TWSTO Flag will be reset
+        return -1;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * i2c_m_setData()
+ *
+ * implement a Master Transmit mode using a polling method.
+ * data is passed out in 'data' buffer with 'byteCount' count,
+ * and sent to slave 'address'.
+ * function returns data bytes sent or -1 on error.
+ *
+ */
+int i2c_m_setData(uint8_t address, uint8_t *data, uint8_t byteCount)
+{
+    uint8_t slaveAddress;
+    uint8_t txIndex;
+
+    if ( byteCount > TWI_BUFF_LEN )
+        return -1;
+
+    slaveAddress = (address << 1) + TW_WRITE;
+    memcpy((void*)txBuffer, (const void*)data, byteCount);
+    txIndex = 0;
+
+    TWCR = (1<<TWEN)|                           // enable TWI-interface
+            (0<<TWIE)|(1<<TWINT)|               // clear INT flag
+            (0<<TWEA)|(1<<TWSTA)|(0<<TWSTO)|    // send s START condition
+            (0<<TWWC);
+
+MASTER_TX_LOOP:
+    while ((TWCR & _BV(TWINT)) == 0);           // wait for transmission ** not time-out check !! **
+
+    switch (TWSR)
+    {
+    /*
+     *   Master Transmit Modes
+     */
+    case TWI_START:                     // -- 0x08
+    case TWI_REP_START:                 // -- 0x10
+        TWDR = slaveAddress;            // send SLA+W
+        TWCR = set_m_TWCR(0, 0, 1, 0);
+        goto MASTER_TX_LOOP;
+        break;
+
+    case TWI_MTX_ADR_ACK:               // -- 0x18
+    case TWI_MTX_DATA_ACK:              // -- 0x28
+        if ( txIndex < byteCount )
+        {
+            TWDR = txBuffer[txIndex++]; // load data into TWDR
+            TWCR = set_m_TWCR(0, 0, 1, 0); // data byte will be transmitted
+            goto MASTER_TX_LOOP;
+        }
+        else
+        {
+            TWCR = set_m_TWCR(0, 1, 1, 0); // STOP condition will be transmitted and TWSTO Flag will be reset
+            return txIndex;                // done transmitting, exit here
+        }
+        break;
+
+    case TWI_MTX_ADR_NACK:              // -- 0x20
+    case TWI_MTX_DATA_NACK:             // -- 0x30
+        TWCR = set_m_TWCR(0, 1, 1, 0);  // STOP condition will be transmitted and TWSTO Flag will be reset
+        return txIndex;
+        break;
+
+    case TWI_ARB_LOST:                  // -- 0x38
+        TWCR = set_m_TWCR(1, 0, 1, 0);  // START condition will be transmitted when the bus becomes free
+        goto MASTER_TX_LOOP;
+        break;
+
+    default:
+        TWCR = set_m_TWCR(0, 1, 1, 0);  // STOP condition will be transmitted and TWSTO Flag will be reset
+        return -1;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * i2c_m_sendByte()
+ *
+ * send one byte of 'command' and one 'byte' of data to slave located
+ * at I2C bus 'address'
+ *
+ */
+int i2c_m_sendByte(uint8_t address, uint8_t command, uint8_t byte)
+{
+    uint8_t data[2];
+
+    data[0] = command;
+    data[1] = byte;
+
+    return i2c_m_setData(address, data, 2 * sizeof(uint8_t));
+}
+
+/* ---------------------------------------------------------------------------
+ * i2c_m_getByte()
+ *
+ * read a data byte from the slave. this requires a slave 'address'
+ * and a 'command' to instruct the slave device which data to send.
+ * data is returned in 'byte'.
+ * function returns '0' in failure and '1' on success.
+ *
+ */
+int i2c_m_getByte(uint8_t address, uint8_t command, uint8_t *byte)
+{
+
+    if ( i2c_m_setData(address, &command, sizeof(uint8_t)) > 0 )  // send the command
+    {
+        return i2c_m_getData(address, byte, sizeof(uint8_t));     // if successful, then read returned data from slave
+    }
+
+    return 0;
+}
 
 /* ---------------------------------------------------------------------------
  * i2c_s_initialize()
@@ -97,13 +306,14 @@ static	uint8_t txBuffer[TWI_BUFF_LEN];              // transmit data buffer, for
  */
 void i2c_s_initialize(uint8_t address, uint8_t answerGenCall)
 {
-	TWAR = ((address<<1) | (answerGenCall ? 1 : 0));
+    TWAR = ((address<<1) | (answerGenCall ? 1 : 0));
+    TWSR = 0;
 
-	// Set own TWI slave address. Accept TWI General Calls.
-	TWCR = (1<<TWEN)|							// enable TWI-interface
-			(1<<TWIE)|(1<<TWINT)|				// interrupts enabled and clear INT flag
-			(1<<TWEA)|(0<<TWSTA)|(0<<TWSTO)|	// ack on requests
-			(0<<TWWC);
+    // Set own TWI slave address. Accept TWI General Calls.
+    TWCR = (1<<TWEN)|                           // enable TWI-interface
+            (1<<TWIE)|(1<<TWINT)|               // interrupts enabled and clear INT flag
+            (1<<TWEA)|(0<<TWSTA)|(0<<TWSTO)|    // ack on requests
+            (0<<TWWC);
 }
 
 /* ---------------------------------------------------------------------------
@@ -116,18 +326,18 @@ void i2c_s_initialize(uint8_t address, uint8_t answerGenCall)
  */
 int i2c_s_getData(uint8_t *data, uint8_t byteCount)
 {
-	uint8_t bytesToMove;
+    uint8_t bytesToMove;
 
-	if ( byteCount > TWI_BUFF_LEN )
-		return 0;
+    if ( byteCount > TWI_BUFF_LEN )
+        return 0;
 
-	while( i2c_rx_busy || rxIndex == 0 );  // block until transaction completes
+    while( i2c_rx_busy || rxIndex == 0 );  // block until transaction completes
 
-	(rxIndex > byteCount) ? (bytesToMove = byteCount) : (bytesToMove = rxIndex);
-	memcpy((void*)data, (const void*)rxBuffer, bytesToMove);
-	rxIndex = 0;
+    (rxIndex > byteCount) ? (bytesToMove = byteCount) : (bytesToMove = rxIndex);
+    memcpy((void*)data, (const void*)rxBuffer, bytesToMove);
+    rxIndex = 0;
 
-	return bytesToMove;
+    return bytesToMove;
 }
 
 /* ---------------------------------------------------------------------------
@@ -141,15 +351,15 @@ int i2c_s_getData(uint8_t *data, uint8_t byteCount)
  */
 int i2c_s_setData(uint8_t *data, uint8_t byteCount)
 {
-	if ( byteCount > TWI_BUFF_LEN )
-		return 0;
+    if ( byteCount > TWI_BUFF_LEN )
+        return 0;
 
-	while ( i2c_tx_busy );  // block until current SLA+R transaction completes
-							// before overwriting the txBuffer with new data
+    while ( i2c_tx_busy );  // block until current SLA+R transaction completes
+                            // before overwriting the txBuffer with new data
 
-	memcpy((void*)txBuffer, (const void*)data, byteCount);
-	txDataCount = byteCount;
-	return byteCount;
+    memcpy((void*)txBuffer, (const void*)data, byteCount);
+    txDataCount = byteCount;
+    return byteCount;
 }
 
 /* ---------------------------------------------------------------------------
@@ -158,91 +368,91 @@ int i2c_s_setData(uint8_t *data, uint8_t byteCount)
  */
 ISR(TWI_vect)
 {
-	switch (TWSR)
-	{
-	/*
-	 *   Slave Receiver Modes
-	 */
-	case TWI_SRX_GEN_ACK:				// -- 0x70
-	case TWI_SRX_GEN_ACK_M_ARB_LOST:	// -- 0x78
-		i2c_genCallActive = 1;
-		/* no break */
-	case TWI_SRX_ADR_ACK:				// -- 0x60
-	case TWI_SRX_ADR_ACK_M_ARB_LOST:	// -- 0x68
-		i2c_rx_busy = 1;				// we're stating a new transaction
-		rxIndex = 0;                    // initialize buffer index
-		TWCR = setTWCR(0,0,1,1);		// Data byte will be received and ACK will be returned
-		break;
+    switch (TWSR)
+    {
+    /*
+     *   Slave Receiver Modes
+     */
+    case TWI_SRX_GEN_ACK:               // -- 0x70
+    case TWI_SRX_GEN_ACK_M_ARB_LOST:    // -- 0x78
+        i2c_genCallActive = 1;
+        /* no break */
+    case TWI_SRX_ADR_ACK:               // -- 0x60
+    case TWI_SRX_ADR_ACK_M_ARB_LOST:    // -- 0x68
+        i2c_rx_busy = 1;                // we're stating a new transaction
+        rxIndex = 0;                    // initialize buffer index
+        TWCR = set_s_TWCR(0,0,1,1);     // Data byte will be received and ACK will be returned
+        break;
 
-	case TWI_SRX_GEN_DATA_NACK:			// -- 0x98
-	case TWI_SRX_ADR_DATA_NACK:			// -- 0x88
-		i2c_rx_busy = 0;				// completed an SLA+W transaction
-		/* no break */
-	case TWI_SRX_GEN_DATA_ACK:			// -- 0x90
-	case TWI_SRX_ADR_DATA_ACK:			// -- 0x80
-		rxBuffer[rxIndex++] = TWDR;		// read data from input to buffer
-		if ( rxIndex == TWI_BUFF_LEN )
-			rxIndex--;					// crude, but will prevent buffer overrun
-		TWCR = setTWCR(0,0,1,1);		// Data byte will be received and ACK will be returned
-		break;
+    case TWI_SRX_GEN_DATA_NACK:         // -- 0x98
+    case TWI_SRX_ADR_DATA_NACK:         // -- 0x88
+        i2c_rx_busy = 0;                // completed an SLA+W transaction
+        /* no break */
+    case TWI_SRX_GEN_DATA_ACK:          // -- 0x90
+    case TWI_SRX_ADR_DATA_ACK:          // -- 0x80
+        rxBuffer[rxIndex++] = TWDR;     // read data from input to buffer
+        if ( rxIndex == TWI_BUFF_LEN )
+            rxIndex--;                  // crude, but will prevent buffer overrun
+        TWCR = set_s_TWCR(0,0,1,1);     // Data byte will be received and ACK will be returned
+        break;
 
-	case TWI_SRX_STOP_RESTART:			// -- 0xA0
-		i2c_rx_busy = 0;				// successful completed an SLA+W transaction
-		TWCR = setTWCR(0,0,1,1);		// in addressed Slave mode own SLA will be recognized
-		break;
+    case TWI_SRX_STOP_RESTART:          // -- 0xA0
+        i2c_rx_busy = 0;                // successful completed an SLA+W transaction
+        TWCR = set_s_TWCR(0,0,1,1);     // in addressed Slave mode own SLA will be recognized
+        break;
 
-	/*
-	 *   Slave Transmit Modes
-	 */
-	case TWI_STX_ADR_ACK:				// -- 0xA8
-	case TWI_STX_ADR_ACK_M_ARB_LOST:	// -- 0xB0
-		i2c_tx_busy = 1;				// we're stating a new transaction
-		txIndex = 0;                    // initialize buffer index
-		TWDR = txBuffer[txIndex++];     // read data from buffer to output
-		if ( txDataCount == txIndex )
-		{
-			TWCR = setTWCR(0,0,1,0);    // indicate last byte transmitted
-			i2c_tx_busy = 0;			// successful completed an SLA+R transaction
-		}
-		else
-			TWCR = setTWCR(0,0,1,1);	// Data byte will be transmitted and ACK should be returned
-		break;
+    /*
+     *   Slave Transmit Modes
+     */
+    case TWI_STX_ADR_ACK:               // -- 0xA8
+    case TWI_STX_ADR_ACK_M_ARB_LOST:    // -- 0xB0
+        i2c_tx_busy = 1;                // we're stating a new transaction
+        txIndex = 0;                    // initialize buffer index
+        TWDR = txBuffer[txIndex++];     // read data from buffer to output
+        if ( txDataCount == txIndex )
+        {
+            TWCR = set_s_TWCR(0,0,1,0); // indicate last byte transmitted
+            i2c_tx_busy = 0;            // successful completed an SLA+R transaction
+        }
+        else
+            TWCR = set_s_TWCR(0,0,1,1); // Data byte will be transmitted and ACK should be returned
+        break;
 
-	case TWI_STX_DATA_ACK:				// -- 0xB8
-		TWDR = txBuffer[txIndex++];		// read next data from buffer to output
-		if ( txDataCount == txIndex )
-		{
-			TWCR = setTWCR(0,0,1,0);    // indicate last byte transmitted
-			i2c_tx_busy = 0;			// successful completed an SLA+R transaction
-		}
-		else
-			TWCR = setTWCR(0,0,1,1);	// Data byte will be transmitted and ACK should be returned
-		break;
+    case TWI_STX_DATA_ACK:              // -- 0xB8
+        TWDR = txBuffer[txIndex++];     // read next data from buffer to output
+        if ( txDataCount == txIndex )
+        {
+            TWCR = set_s_TWCR(0,0,1,0); // indicate last byte transmitted
+            i2c_tx_busy = 0;            // successful completed an SLA+R transaction
+        }
+        else
+            TWCR = set_s_TWCR(0,0,1,1); // Data byte will be transmitted and ACK should be returned
+        break;
 
-	case TWI_STX_DATA_NACK:				// -- 0xC0
-		TWCR = setTWCR(0,0,1,1);		// in addressed Slave mode own SLA will be recognized
-		break;
+    case TWI_STX_DATA_NACK:             // -- 0xC0
+        TWCR = set_s_TWCR(0,0,1,1);     // in addressed Slave mode own SLA will be recognized
+        break;
 
-	case TWI_STX_DATA_ACK_LAST_BYTE:	// -- 0xC8
-		TWCR = setTWCR(0,0,1,1);		// in addressed Slave mode own SLA will be recognized
-		break;
+    case TWI_STX_DATA_ACK_LAST_BYTE:    // -- 0xC8
+        TWCR = set_s_TWCR(0,0,1,1);     // in addressed Slave mode own SLA will be recognized
+        break;
 
-	/*
-	 *   Other Slave States
-	 */
-	case TWI_BUS_ERROR:					// -- 0c00
-		i2c_rx_busy = 0;				// reset any transaction indication
-		i2c_tx_busy = 0;
-		txIndex = 0;
-		rxIndex = 0;
-		TWCR = setTWCR(0,1,1,0);		// internal reset
-		TWCR = setTWCR(0,0,1,1);		// in addressed Slave mode own SLA will be recognized
-		break;
+    /*
+     *   Other Slave States
+     */
+    case TWI_BUS_ERROR:                 // -- 0c00
+        i2c_rx_busy = 0;                // reset any transaction indication
+        i2c_tx_busy = 0;
+        txIndex = 0;
+        rxIndex = 0;
+        TWCR = set_s_TWCR(0,1,1,0);     // internal reset
+        TWCR = set_s_TWCR(0,0,1,1);     // in addressed Slave mode own SLA will be recognized
+        break;
 
-	case TWI_NO_STATE:					// -- 0xF8
-		// do nothing
-		break;
+    case TWI_NO_STATE:                  // -- 0xF8
+        // do nothing
+        break;
 
-	default:;
-	}
+    default:;
+    }
 }

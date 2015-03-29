@@ -1,36 +1,32 @@
 /*****************************************************************************
-* i2c_drv.h
+* uart_drv.h
 *
-* Driver hearder for AVT TWI interface
+* Driver header for AVR UART0 interface
 *
 * This is driver is interrupt driven.
 * All functionality is controlled through passing information to and
 * from functions.
 *
-* Created: December 14, 2014
+* Created: January 14, 2015
 *
 *****************************************************************************/
 
-#ifndef __I2C_DRV_H__
-#define __I2C_DRV_H__
+#ifndef __UART_DRV_H__
+#define __UART_DRV_H__
 
 /****************************************************************************
   Definitions
 ****************************************************************************/
-#define TWI_BUFF_LEN    8 // data byte buffer
+#define UART_BUFF_LEN    32 // data byte buffer
 
 /****************************************************************************
   Function prototypes
 ****************************************************************************/
-void i2c_m_initialize(void);
-int i2c_m_getData(uint8_t, uint8_t *, uint8_t);
-int i2c_m_setData(uint8_t, uint8_t *, uint8_t);
+void uart_initialize();
+uint8_t uart_rx_data(uint8_t *, uint8_t);
+void uart_tx_Data(uint8_t *, uint8_t);
+void uart_putchr(uint8_t);
+uint8_t uart_getchr(void);
+int uart_ischar(void);
 
-int i2c_m_sendByte(uint8_t, uint8_t, uint8_t);
-int i2c_m_getByte(uint8_t, uint8_t, uint8_t *);
-
-void i2c_s_initialize(uint8_t, uint8_t);
-int i2c_s_getData(uint8_t *, uint8_t);
-int i2c_s_setData(uint8_t *, uint8_t);
-
-#endif /* __I2C_DRV_H__ */
+#endif /* __UART_DRV_H__ */
