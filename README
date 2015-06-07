@@ -58,6 +58,5 @@
    set prompt <on> | <off>      - set prompt state in 'nDoPrompt'
    set [<kp> | <ki> | <kd>] <n> - set one of the PID constants with fixed-point number (format Q10.5)
    set lean <lean>              - set frame leaning level with fixed-point number (format Q10.5)
-   set port <port_b>            - direct set port B
-   set pwm <pwm>                - direct set PWM
+   set pwmmin <pwm_min>         - set min. pwm value
 

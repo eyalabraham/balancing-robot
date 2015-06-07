@@ -58,8 +58,7 @@
  *   set prompt <on> | <off>      - set prompt state in 'nDoPrompt'
  *   set [<kp> | <ki> | <kd>] <n> - set one of the PID constants with fixed-point number (format Q10.5)
  *   set lean <lean>              - set frame leaning level with fixed-point number (format Q10.5)
- *   set port <port_b>            - direct set port B
- *   set pwm <pwm>                - direct set PWM
+ *   set pwmmin <pwm_min>         - set min. pwm value
  * 
  */
 
@@ -103,13 +102,13 @@
 #define     GYRO_SCALER     131.0   // divisor to scale accelerometer reading
 
 // PID constants default
-#define     KP              35.0    // PID constants
-#define     KI              5.0
-#define     KD              1.0
+#define     KP              20.0    // PID constants
+#define     KI              0.0
+#define     KD              0.0
 #define     MAX_INTEG       10.0
 #define     RESET_INTEG     1.0
-#define     LEAN           -3.80    // platform leaning in [deg]
-#define     PID_ANGLE_LIM   30.0    // stop running PID outside this angle in [deg]
+#define     LEAN           -1.0     // platform leaning in [deg]
+#define     PID_ANGLE_LIM   45.0    // stop running PID outside this angle in [deg]
 
 // PID frequency Timer1 constant (sec 15.9.2 page 126..126)
 #define     PID_FREQ        25      // <------PID frequency in Hz
@@ -201,10 +200,11 @@ volatile    float lean;         // platform lean constant
 volatile    int   pwm_min;
 
 // Kalman filter variable
+int   kalmanResetGuard = 0;     // Kalman filter reset guard
 float Q_angle = 0.001;          // Process noise variance for the accelerometer
 float Q_gyro  = 0.003;          // Process noise variance for the gyro bias
 float R_angle = 0.03;           // Measurement noise variance - this is the variance of the measurement noise
-float angle   = -PID_ANGLE_LIM;
+float angle   = 0.0;
 float bias    = 0.0;
 float P_00    = 0.0,
       P_01    = 0.0,
@@ -542,6 +542,23 @@ float kalmanFilter(float newAngle, float newRate, float looptime)
 }
 
 /* ----------------------------------------------------------------------------
+ * resetKalmanFilter()
+ *
+ *  reset Kalman filter parameters
+ *  source: http://www.x-firm.com/?page_id=148
+ *
+ */
+void resetKalmanFilter(float angleInit)
+{
+    angle   = angleInit;
+    bias    = 0.0;
+    P_00    = 0.0;
+    P_01    = 0.0;
+    P_10    = 0.0;
+    P_11    = 0.0;
+}
+
+/* ----------------------------------------------------------------------------
  * This ISR will trigger when Timer 1 compare indicates the time interval
  * for running the PID tasks:
  * - read tilt/gyro
@@ -573,7 +590,7 @@ ISR(TIMER1_COMPA_vect)
         distance = sqrt(Accel_x*Accel_x + Accel_z*Accel_z);
         y_angle = atan2(Accel_y, distance) * 57.2957795;    // convert angle from [rad] to [deg]
 
-        // check if platform is out of control limits
+        // check if platform is out of control-limits and inhibit PID
         // if it is, then blink 'run' LED and exit PID control loop
         if ( abs(y_angle) > PID_ANGLE_LIM )
         {
@@ -585,10 +602,18 @@ ISR(TIMER1_COMPA_vect)
             }
             PORTB &= MOTOR_CLR_DIR;         // stop motors
             PORTB ^= 0x80;                  // toggle b7 cycle-test signal
+            kalmanResetGuard = 0;           // reset once when existing PID inhibit state
             return;
         }
         else
+        {
             PORTB |= STAT_RUN;              // turn on 'run' LED
+            if ( !kalmanResetGuard )        // reset only once entering back into active PID
+            {
+                resetKalmanFilter(y_angle);
+                kalmanResetGuard = 1;
+            }
+        }
 
         // data filters
 
@@ -606,7 +631,7 @@ ISR(TIMER1_COMPA_vect)
         DEk = Ek - Ek_1;                    // difference of errors for differential part
         Ek_1 = Ek;
 
-        if ( abs(SEk) > MAX_INTEG )              // prevent integrator wind-up
+        if ( abs(SEk) > MAX_INTEG )         // prevent integrator wind-up
             SEk = copysign((float) MAX_INTEG, SEk);
         //if ( Ek < RESET_INTEG )
         //    SEk = 0.0;
@@ -652,7 +677,10 @@ ISR(TIMER1_COMPA_vect)
         PORTB ^= 0x80;
     }
     else
+    {
         PORTB &= (~(STAT_RUN) | PB_PUP_INIT);   // turn off 'run' LED
+        kalmanResetGuard = 0;
+    }
 }
 #else
 ISR(TIMER1_COMPA_vect)
@@ -799,6 +827,7 @@ int main(void)
     Kd   = KD;
     lean = LEAN;
     pwm_min = MOTOR_PWM_MIN;
+    kalmanResetGuard = 0;
 
     // print command line prompt
     printstr_p(PSTR(PROMPT));
