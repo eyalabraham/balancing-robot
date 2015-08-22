@@ -79,7 +79,7 @@
 // debug print to UART port definition
 // UART is assumed to be defined and initialized
 //#define     __DEBUG_PRINT__
-//#define     __SENSOR_TRACE__
+#define     __SENSOR_TRACE__
 
 // Gyro/Accel I2C definitions
 #define     MPU_ADD         0x68    // I2C bus address for Gyro/Accel unit
@@ -212,9 +212,7 @@ float P_00    = 0.0,
       P_11    = 0.0;
 
 // for converting and printing floating point numbers
-int     i, d1, d2;
-float   f2;
-char    sig;
+int     i;
 
 /* ----------------------------------------------------------------------------
  * ioinit()
@@ -356,6 +354,26 @@ int vprintfunc(char *format, ...)
 }
 
 /* ----------------------------------------------------------------------------
+ * printfloat()
+ *
+ * print a float number
+ *
+ */
+void printfloat(float val)
+{
+    int     d1, d2, sig;
+    float   f2;
+
+    d1 = (int) val;
+    f2 = val - d1;
+    d2 = (int) (f2 * 1000.0);
+    sig = (val < 0) ? '-' : '+';
+    d1 = abs(d1);
+    d2 = abs(d2);
+    vprintfunc("%c%d.%03d", sig, d1, d2);
+}
+
+/* ----------------------------------------------------------------------------
  * process_cli()
  *
  * process the command line text and execute appropriate action
@@ -432,56 +450,31 @@ int process_cli(char *commandLine)
         // get <kp> | <ki> | <kd>   - print one of the PID constants as: fixed-point, float
         if ( strcmp(tokens[1], "kp") == 0 )
         {
-            d1 = (int) Kp;
-            f2 = Kp - d1;
-            d2 = (int) (f2 * 1000.0);
-            sig = (Kp < 0) ? '-' : '+';
-            d1 = abs(d1);
-            d2 = abs(d2);
-            vprintfunc("%c%d.%03d\n", sig, d1, d2);
+            printfloat(Kp);
+            vprintfunc("\n");
         }
         else if ( strcmp(tokens[1], "ki") == 0 )
         {
-            d1 = (int) Ki;
-            f2 = Ki - d1;
-            d2 = (int) (f2 * 1000.0);
-            sig = (Ki < 0) ? '-' : '+';
-            d1 = abs(d1);
-            d2 = abs(d2);
-            vprintfunc("%c%d.%03d\n", sig, d1, d2);
+            printfloat(Ki);
+            vprintfunc("\n");
         }
         else if ( strcmp(tokens[1], "kd") == 0 )
         {
-            d1 = (int) Kd;
-            f2 = Kd - d1;
-            d2 = (int) (f2 * 1000.0);
-            sig = (Kd < 0) ? '-' : '+';
-            d1 = abs(d1);
-            d2 = abs(d2);
-            vprintfunc("%c%d.%03d\n", sig, d1, d2);
+            printfloat(Kd);
+            vprintfunc("\n");
         }
         // get lean                 - print frame leaning value as: fixed-point, float
         else if ( strcmp(tokens[1], "lean") == 0 )
         {
-            d1 = (int) lean;
-            f2 = lean - d1;
-            d2 = (int) (f2 * 1000.0);
-            sig = (lean < 0) ? '-' : '+';
-            d1 = abs(d1);
-            d2 = abs(d2);
-            vprintfunc("%c%d.%03d\n", sig, d1, d2);
+            printfloat(lean);
+            vprintfunc("\n");
         }
         // get trace                - dump trace buffer
         else if ( strcmp(tokens[1], "batt") == 0 )
         {
             fbatt = ((float) uBattery * BATT_CONVRT);
-            d1 = (int) fbatt;
-            f2 = fbatt - d1;
-            d2 = (int) (f2 * 1000.0);
-            sig = (fbatt < 0) ? '-' : '+';
-            d1 = abs(d1);
-            d2 = abs(d2);
-            vprintfunc("%c%d.%03d\n", sig, d1, d2);
+            printfloat(fbatt);
+            vprintfunc("\n");
         }
         // get run                  - print go/no-go switch state: 1 or 0
         else if ( strcmp(tokens[1], "run") == 0 )
@@ -664,13 +657,8 @@ ISR(TIMER1_COMPA_vect)
         OCR0B = pwm;
 
 #ifdef __DEBUG_PRINT__
-        d1 = (int) Ek;
-        f2 = Ek - d1;
-        d2 = (int) (f2 * 1000.0);
-        sig = (Ek < 0) ? '-' : '+';
-        d1 = abs(d1);
-        d2 = abs(d2);
-        vprintfunc("%c%d.%03d, %d\n", sig, d1, d2, motor_power);
+        printfloat(Ek);
+        vprintfunc("\n");
 #endif /* __DEBUG_PRINT__ */
 
         // toggle b7 to output a cycle-test signal
@@ -686,6 +674,8 @@ ISR(TIMER1_COMPA_vect)
 ISR(TIMER1_COMPA_vect)
 {
     float   distance, y_angle;
+    uint8_t pwm;
+    int     motor_power, mp;
 
     if ( runFlag )
     {
@@ -728,30 +718,29 @@ ISR(TIMER1_COMPA_vect)
 
         // Kalman filter
         Ek = kalmanFilter(y_angle, Gyro_x, PID_LOOP_TIME);
+        motor_power = round(Ek);
 
-        d1 = (int) y_angle;
-        f2 = y_angle - d1;
-        d2 = (int) (f2 * 1000.0);
-        sig = (y_angle < 0) ? '-' : '+';
-        d1 = abs(d1);
-        d2 = abs(d2);
-        vprintfunc("%c%d.%03d", sig, d1, d2);
+        // setup motor pwm power
+        mp = abs(motor_power);
+        if ( mp > (MOTOR_PWM_MAX - pwm_min) )
+            mp = MOTOR_PWM_MAX - pwm_min;
 
-        d1 = (int) Gyro_x;
-        f2 = Gyro_x - d1;
-        d2 = (int) (f2 * 1000.0);
-        sig = (Gyro_x < 0) ? '-' : '+';
-        d1 = abs(d1);
-        d2 = abs(d2);
-        vprintfunc(" %c%d.%03d", sig, d1, d2);
+        pwm = ((uint8_t) mp) + pwm_min;
 
-        d1 = (int) Ek;
-        f2 = Ek - d1;
-        d2 = (int) (f2 * 1000.0);
-        sig = (Ek < 0) ? '-' : '+';
-        d1 = abs(d1);
-        d2 = abs(d2);
-        vprintfunc(" %c%d.%03d\n", sig, d1, d2);
+        printfloat(Accel_x);
+        vprintfunc(",");
+        printfloat(Accel_y);
+        vprintfunc(",");
+        printfloat(Accel_z);
+        vprintfunc(",");
+        printfloat(Gyro_x);
+        vprintfunc(",");
+        printfloat(distance);
+        vprintfunc(",");
+        printfloat(y_angle);
+        vprintfunc(",");
+        printfloat(Ek);
+        vprintfunc(",%d,%d\n", motor_power, pwm);
 
         // toggle b7 to output a cycle-test signal
         PORTB ^= 0x80;
@@ -828,6 +817,46 @@ int main(void)
     lean = LEAN;
     pwm_min = MOTOR_PWM_MIN;
     kalmanResetGuard = 0;
+
+    /* adding this section of code to calculate and print
+     * number ranges of sensor output, Kalman filter and CPU rounding
+     * to test for potential loss of accuracy in number format conversions
+     *
+     */
+
+    /*
+    uint16_t i = 0;
+    int      val;
+    float   distance, y_angle;
+
+    for ( i = 0; i <= ACCEL_SCALER; i++)
+    {
+        if ( i >= 0x8000 )                  // convert to signed integer
+            val = -((65535 - i) + 1);       // mimic read_mpu_2c()
+        else
+            val = i;
+
+        Accel_x = 0;
+        Accel_y = (float) val / ACCEL_SCALER;
+        Accel_z = 1;
+        Gyro_x  = 0;
+
+        // rotation calculation (http://www.hobbytronics.co.uk/accelerometer-info)
+        distance = sqrt(Accel_x*Accel_x + Accel_z*Accel_z);
+        y_angle = atan2(Accel_y, distance) * 57.2957795;    // convert angle from [rad] to [deg]
+
+        vprintfunc("%d,", i);
+        printfloat(Accel_y);
+        vprintfunc(",");
+        printfloat(y_angle);
+        vprintfunc("\n");
+    }
+    */
+
+    /*
+     * -- end of test section --
+     *
+     */
 
     // print command line prompt
     printstr_p(PSTR(PROMPT));
