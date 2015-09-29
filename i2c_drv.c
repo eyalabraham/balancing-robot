@@ -109,7 +109,8 @@ void i2c_m_initialize(void)
  *
  * implement a Master Receive mode using a polling method.
  * data is passed in with 'data' buffer from slave 'address'.
- * function returns data bytes received or -1 on error.
+ * function returns data bytes received or -1 on error, and
+ * number of bytes read on success
  *
  */
 int i2c_m_getData(uint8_t address, uint8_t *data, uint8_t byteCount)
@@ -278,7 +279,7 @@ int i2c_m_sendByte(uint8_t address, uint8_t command, uint8_t byte)
  * read a data byte from the slave. this requires a slave 'address'
  * and a 'command' to instruct the slave device which data to send.
  * data is returned in 'byte'.
- * function returns '0' in failure and '1' on success.
+ * function returns '-1' 0n failure, and '1' on success.
  *
  */
 int i2c_m_getByte(uint8_t address, uint8_t command, uint8_t *byte)
@@ -289,7 +290,7 @@ int i2c_m_getByte(uint8_t address, uint8_t command, uint8_t *byte)
         return i2c_m_getData(address, byte, sizeof(uint8_t));     // if successful, then read returned data from slave
     }
 
-    return 0;
+    return -1;
 }
 
 /* ---------------------------------------------------------------------------

@@ -72,6 +72,7 @@
 #include    <avr/pgmspace.h>
 #include    <avr/io.h>
 #include    <avr/interrupt.h>
+#include    <avr/wdt.h>
 
 #include    "i2c_drv.h"
 #include    "uart_drv.h"
@@ -102,13 +103,13 @@
 #define     GYRO_SCALER     131.0   // divisor to scale accelerometer reading
 
 // PID constants default
-#define     KP              20.0    // PID constants
+#define     KP              25.0    // PID constants
 #define     KI              0.0
 #define     KD              0.0
-#define     MAX_INTEG       10.0
-#define     RESET_INTEG     1.0
-#define     LEAN           -1.0     // platform leaning in [deg]
-#define     PID_ANGLE_LIM   45.0    // stop running PID outside this angle in [deg]
+#define     MAX_INTEG       100.0
+#define     RESET_INTEG     0.5
+#define     LEAN            0.0     // platform leaning in [deg]
+#define     PID_ANGLE_LIM   30.0    // stop running PID outside this angle in [deg]
 
 // PID frequency Timer1 constant (sec 15.9.2 page 126..126)
 #define     PID_FREQ        25      // <------PID frequency in Hz
@@ -117,7 +118,7 @@
 #define     LED_BLINK_RATE  2       // LED blink rate in Hz
 
 // complementary filter constant
-#define     ALPHA           0.2
+#define     ALPHA           0.98
 
 // kalman filter definitions
 #define     PID_LOOP_TIME   ((float)(1/(float)PID_FREQ))
@@ -135,20 +136,20 @@
 #define     MOTOR_FWD_RIGHT 0x02    // right motor forward
 #define     MOTOR_REV_LEFT  0x04    // left motor reverse
 #define     MOTOR_FWD_LEFT  0x08    // left motor forward
-#define     MOTOR_PWM_INIT  0xd0    // initial PWM value
-#define     MOTOR_PWM_MIN   100     // minimum PWM value
+#define     MOTOR_PWM_MIN   0       // initial/minimum PWM value
 #define     MOTOR_PWM_MAX   255
-#define     CTRL_RANGE      MOTOR_PWM_MAX - MOTOR_PWM_MIN
 
 // misc masks
-#define     STAT_TOGG_BATT  0x20    // toggle batt. status (XOR mask)
+#define     STAT_TOGG_BATT  0x20    // toggle battery status (XOR mask)
 #define     STAT_RUN        0x40    // toggle running status (XOR mask)
 #define     STAT_RUN_SW     0x10    // run flag port pin test mask
 
 // battery voltage macros
-#define     BATT_LVL_65     162     // battery threshold levels
-#define     BATT_LVL_60     149
-#define     BATT_CONVRT     0.04027 // conversion constant from ADC0 to true battery voltage
+#define     BATT_LVL_65     164     // battery threshold levels
+#define     BATT_LVL_60     152     // for 6 x NiCd battery pile
+#define     BATT_LVL_55     139
+#define     BATT_LVL_70     177     // for LiPo batteries
+#define     BATT_CONVRT     0.0394749 // ADC0 battery voltage conversion ratio
 
 // UART command line processing
 #define     CLI_BUFFER      80
@@ -170,11 +171,19 @@
   get batt                     - battery voltage\n\
   get run                      - go/no-go switch\n\
   get pwmmin                   - show pwm min value\n\
+  get alpha                    - print comp. filter alpha\n\
   set prompt <on> | <off>      - set prompt\n\
   set [<kp> | <ki> | <kd>] <n> - set PID constants\n\
   set lean <lean>              - set frame leaning\n\
-  set pwmmin <pwm_min>         - set min. pwm value\n"
-   
+  set pwmmin <pwm_min>         - set min. pwm value\n\
+  set alpha <a>                - set filter alpha\n"
+
+/****************************************************************************
+  special function prototypes
+****************************************************************************/
+// This function is called upon a HARDWARE RESET:
+void reset(void) __attribute__((naked)) __attribute__((section(".init3")));
+
 /****************************************************************************
   Globals
 ****************************************************************************/
@@ -183,10 +192,12 @@ uint8_t     runFlag = 0;            // run flag reflecting the go/no-go switch s
 int         nDoPrompt = 1;          // print prompt
 int         blink;                  // LED blink rate
 
-float Accel_x;                  // accelerometer X, TIMER1 global variable
-float Accel_y;                  // accelerometer Y, TIMER1 global variable
-float Accel_z;                  // accelerometer Z, TIMER1 global variable
-float Gyro_x;                   // gyroscope X, TIMER1 global variable
+float Accel_x;                  // accelerometer X, TIMER1 ISR global variable
+float Accel_y;                  // accelerometer Y, TIMER1 ISR global variable
+float Accel_z;                  // accelerometer Z, TIMER1 ISR global variable
+float Gyro_x;                   // gyroscope X, TIMER1 ISR global variable
+
+float alpha = (float) ALPHA;    // complementary filter constant
 
 // PID formula variable
 float Ek;
@@ -211,11 +222,6 @@ float P_00    = 0.0,
       P_10    = 0.0,
       P_11    = 0.0;
 
-// for converting and printing floating point numbers
-int     i, d1, d2;
-float   f2;
-char    sig;
-
 /* ----------------------------------------------------------------------------
  * ioinit()
  *
@@ -237,19 +243,19 @@ void ioinit(void)
 
     // initialize Timer0 to provide 2 independent PWM signals for motor control
     // (section 14.7.3 p.101)
-    // - base PWM frequency at 15625Hz
+    // - base PWM frequency at 15625Hz -> 1953.125Hz -> 244.14Hz
     // - OC0A -> right motor
     // - OC0B -> left motor
-    OCR0A  = MOTOR_PWM_INIT; // initialize output compare registers
-    OCR0B  = MOTOR_PWM_INIT;
+    OCR0A  = MOTOR_PWM_MIN; // initialize output compare registers
+    OCR0B  = MOTOR_PWM_MIN;
     TCNT0  = 0;    // initialize counter register
     TIMSK0 = 0;    // no interrupts
-    TCCR0A = 0xF3; // 'fast PWM' set OC0x on compare (signal going through 7414)
-    TCCR0B = 0x01; // compare on OCRx, use clock with scaler=1 and start timer
+    TCCR0A = 0xa3; // 'fast PWM' clear OC0x on compare
+    TCCR0B = 0x02; // compare on OCRx, use clock with scaler=2 (pwm Fc=2KHz) and start timer
 
     DDRD   = 0x60; // enable PD5 and PD6 as outputs so that OCRx PWM signals are "visible"
 
-    // initialize Timer1 to provide a periodic interrupt every 50mSec
+    // initialize Timer1 to provide a periodic interrupt for PID
     // with Clear Timer on Compare Match (CTC) Mode (sec 15.9.2 p.125)
     // the interrupt routine will drive the PID control loop:
     // - read tilt/gyro
@@ -263,14 +269,34 @@ void ioinit(void)
     TIMSK1 = 0x02;              // interrupt on OCR1A match
 
     // initialize ADC converter input ADC0
+    /*
     ADMUX  = 0x60;  // external AVcc reference, left adjusted result, ADC0 source
     ADCSRA = 0xEF;  // enable auto-triggered conversion and interrupts, ADC clock 31.25KHz
     ADCSRB = 0x00;  // auto trigger source is free-running
+    */
 
     // initialize general IO pins for output
     // - PB0, PB1: output, no pull-up, right and left motor fwd/rev control
-    DDRB  = PB_DDR_INIT; // PB pin directions
-    PORTB = PB_INIT | PB_PUP_INIT; // initial value of pins is '0', and input with pull-up
+    DDRB  = PB_DDR_INIT;            // PB pin directions
+    PORTB = PB_INIT | PB_PUP_INIT;  // initial value of pins is '0', and input with pull-up
+}
+
+/* ----------------------------------------------------------------------------
+ * reset()
+ *
+ *  Clear SREG_I on hardware reset.
+ *  source: http://electronics.stackexchange.com/questions/117288/watchdog-timer-issue-avr-atmega324pa
+ */
+void reset(void)
+{
+     cli();
+    // Note that for newer devices (any AVR that has the option to also
+    // generate WDT interrupts), the watchdog timer remains active even
+    // after a system reset (except a power-on condition), using the fastest
+    // prescaler value (approximately 15 ms). It is therefore required
+    // to turn off the watchdog early during program startup.
+    MCUSR = 0; // clear reset flags
+    wdt_disable();
 }
 
 /* ----------------------------------------------------------------------------
@@ -281,9 +307,9 @@ void ioinit(void)
  */
 int read_mpu_2c(uint8_t address, uint8_t command)
 {
-    uint8_t     high;
-    uint8_t     low;
-    uint16_t    value;
+    static uint8_t     high;
+    static uint8_t     low;
+    static uint16_t    value;
 
     i2c_m_getByte(address, command, &high);     // read bytes
     i2c_m_getByte(address, command+1, &low);
@@ -356,6 +382,27 @@ int vprintfunc(char *format, ...)
 }
 
 /* ----------------------------------------------------------------------------
+ * printfloat()
+ *
+ * print a floating point number
+ *
+ */
+void printfloat(float val)
+{
+    int     d1, d2;
+    float   f2;
+    char    sig;
+
+    d1 = (int) val;
+    f2 = val - d1;
+    d2 = (int) (f2 * 1000.0);
+    sig = (val < 0) ? '-' : '+';
+    d1 = abs(d1);
+    d2 = abs(d2);
+    vprintfunc("%c%d.%03d", sig, d1, d2);
+}
+
+/* ----------------------------------------------------------------------------
  * process_cli()
  *
  * process the command line text and execute appropriate action
@@ -367,7 +414,7 @@ int process_cli(char *commandLine)
     char    *tokens[MAX_TOKENS] = {0, 0, 0};
     char    *token;
     char    *tempCli;
-    int     numTokens;
+    int     i, numTokens;
     float   fbatt;
 
     // separate command line into tokens
@@ -413,6 +460,11 @@ int process_cli(char *commandLine)
         {
             Kd = atof(tokens[2]);
         }
+        // set Complementary alpha
+        else if ( strcmp(tokens[1], "alpha") == 0 )
+        {
+            alpha = atof(tokens[2]);
+        }
         // set pwmmin <pwm_min>         - set min. pwm value
         else if ( strcmp(tokens[1], "pwmmin") == 0 )
         {
@@ -432,56 +484,38 @@ int process_cli(char *commandLine)
         // get <kp> | <ki> | <kd>   - print one of the PID constants as: fixed-point, float
         if ( strcmp(tokens[1], "kp") == 0 )
         {
-            d1 = (int) Kp;
-            f2 = Kp - d1;
-            d2 = (int) (f2 * 1000.0);
-            sig = (Kp < 0) ? '-' : '+';
-            d1 = abs(d1);
-            d2 = abs(d2);
-            vprintfunc("%c%d.%03d\n", sig, d1, d2);
+            printfloat(Kp);
+            vprintfunc("\n");
         }
         else if ( strcmp(tokens[1], "ki") == 0 )
         {
-            d1 = (int) Ki;
-            f2 = Ki - d1;
-            d2 = (int) (f2 * 1000.0);
-            sig = (Ki < 0) ? '-' : '+';
-            d1 = abs(d1);
-            d2 = abs(d2);
-            vprintfunc("%c%d.%03d\n", sig, d1, d2);
+            printfloat(Ki);
+            vprintfunc("\n");
+
         }
         else if ( strcmp(tokens[1], "kd") == 0 )
         {
-            d1 = (int) Kd;
-            f2 = Kd - d1;
-            d2 = (int) (f2 * 1000.0);
-            sig = (Kd < 0) ? '-' : '+';
-            d1 = abs(d1);
-            d2 = abs(d2);
-            vprintfunc("%c%d.%03d\n", sig, d1, d2);
+            printfloat(Kd);
+            vprintfunc("\n");
         }
         // get lean                 - print frame leaning value as: fixed-point, float
         else if ( strcmp(tokens[1], "lean") == 0 )
         {
-            d1 = (int) lean;
-            f2 = lean - d1;
-            d2 = (int) (f2 * 1000.0);
-            sig = (lean < 0) ? '-' : '+';
-            d1 = abs(d1);
-            d2 = abs(d2);
-            vprintfunc("%c%d.%03d\n", sig, d1, d2);
+            printfloat(lean);
+            vprintfunc("\n");
+        }
+        // get alpha                - print Complementary filter alpha
+        else if ( strcmp(tokens[1], "alpha") == 0 )
+        {
+            printfloat(alpha);
+            vprintfunc("\n");
         }
         // get trace                - dump trace buffer
         else if ( strcmp(tokens[1], "batt") == 0 )
         {
-            fbatt = ((float) uBattery * BATT_CONVRT);
-            d1 = (int) fbatt;
-            f2 = fbatt - d1;
-            d2 = (int) (f2 * 1000.0);
-            sig = (fbatt < 0) ? '-' : '+';
-            d1 = abs(d1);
-            d2 = abs(d2);
-            vprintfunc("%c%d.%03d\n", sig, d1, d2);
+            fbatt  = ((float) uBattery * (float) BATT_CONVRT);
+            printfloat(fbatt);
+            vprintfunc("\n");
         }
         // get run                  - print go/no-go switch state: 1 or 0
         else if ( strcmp(tokens[1], "run") == 0 )
@@ -516,7 +550,7 @@ int process_cli(char *commandLine)
  */
 float kalmanFilter(float newAngle, float newRate, float looptime)
 {
-    float y, S, K_0, K_1;
+    static float y, S, K_0, K_1;
 
     angle += looptime * (newRate - bias);
 
@@ -565,15 +599,15 @@ void resetKalmanFilter(float angleInit)
  * - compute PID
  * - set motor PWMs
  *
- * measured execution time, 7mSec
+ * measured execution time. approx. 7mSec
  *
  */
 #ifndef __SENSOR_TRACE__
 ISR(TIMER1_COMPA_vect)
 {
-    uint8_t pwm, motor_dir, port_b;
-    int     motor_power, mp;
-    float   distance, y_angle;
+    static uint8_t pwm, motor_dir, port_b;
+    static int     motor_power, mp;
+    static float   distance, y_angle;
 
     if ( runFlag )
     {
@@ -613,17 +647,17 @@ ISR(TIMER1_COMPA_vect)
                 resetKalmanFilter(y_angle);
                 kalmanResetGuard = 1;
             }
+            Ek = 0;
+            Ek_1 = y_angle;
         }
-
-        // data filters
-
-        // complementary filter
-        /*
-        Ek = (float) ALPHA * (Ek_1 + Gyro_x * PID_LOOP_TIME) + ((1 - (float) ALPHA) * y_angle);
-        */
 
         // Kalman filter
         Ek = kalmanFilter(y_angle, Gyro_x, PID_LOOP_TIME);
+
+        // Complementary Filer
+        // http://ozzmaker.com/2013/04/18/success-with-a-balancing-robot-using-a-raspberry-pi/
+        //Ek = (alpha * (Ek_1 + (Gyro_x * PID_LOOP_TIME))) + ((1 - alpha) * y_angle);
+
 
         // PID calculation
         Ek += lean;                         // offset for frame leaning
@@ -633,7 +667,7 @@ ISR(TIMER1_COMPA_vect)
 
         if ( abs(SEk) > MAX_INTEG )         // prevent integrator wind-up
             SEk = copysign((float) MAX_INTEG, SEk);
-        //if ( Ek < RESET_INTEG )
+        //if ( Ek < RESET_INTEG )             // integrator reset
         //    SEk = 0.0;
 
         Uk = Kp*Ek + Ki*SEk + Kd*DEk;       // calculate PID
@@ -654,7 +688,7 @@ ISR(TIMER1_COMPA_vect)
 
         pwm = ((uint8_t) mp) + pwm_min;
 
-        // setup IO ports to affect motors
+        // setup IO ports for motors
         port_b = PORTB;
         port_b &= MOTOR_CLR_DIR;
         port_b |= motor_dir;
@@ -663,21 +697,12 @@ ISR(TIMER1_COMPA_vect)
         OCR0A = pwm;
         OCR0B = pwm;
 
-#ifdef __DEBUG_PRINT__
-        d1 = (int) Ek;
-        f2 = Ek - d1;
-        d2 = (int) (f2 * 1000.0);
-        sig = (Ek < 0) ? '-' : '+';
-        d1 = abs(d1);
-        d2 = abs(d2);
-        vprintfunc("%c%d.%03d, %d\n", sig, d1, d2, motor_power);
-#endif /* __DEBUG_PRINT__ */
-
         // toggle b7 to output a cycle-test signal
         PORTB ^= 0x80;
     }
     else
     {
+        PORTB &= MOTOR_CLR_DIR;                 // stop motors
         PORTB &= (~(STAT_RUN) | PB_PUP_INIT);   // turn off 'run' LED
         kalmanResetGuard = 0;
     }
@@ -717,41 +742,26 @@ ISR(TIMER1_COMPA_vect)
             return;
         }
         else
+        {
             PORTB |= STAT_RUN;              // turn on 'run' LED
+            Ek = 0;
+            Ek_1 = y_angle;
+        }
 
         // data filters
 
         // complementary filter
-        /*
-        Ek = (float) ALPHA * (Ek_1 + Gyro_x * PID_LOOP_TIME) + ((1 - (float) ALPHA) * y_angle);
-        */
+        //Ek = (alpha * (Ek_1 + (Gyro_x * PID_LOOP_TIME))) + ((1 - alpha) * y_angle);
 
         // Kalman filter
         Ek = kalmanFilter(y_angle, Gyro_x, PID_LOOP_TIME);
 
-        d1 = (int) y_angle;
-        f2 = y_angle - d1;
-        d2 = (int) (f2 * 1000.0);
-        sig = (y_angle < 0) ? '-' : '+';
-        d1 = abs(d1);
-        d2 = abs(d2);
-        vprintfunc("%c%d.%03d", sig, d1, d2);
-
-        d1 = (int) Gyro_x;
-        f2 = Gyro_x - d1;
-        d2 = (int) (f2 * 1000.0);
-        sig = (Gyro_x < 0) ? '-' : '+';
-        d1 = abs(d1);
-        d2 = abs(d2);
-        vprintfunc(" %c%d.%03d", sig, d1, d2);
-
-        d1 = (int) Ek;
-        f2 = Ek - d1;
-        d2 = (int) (f2 * 1000.0);
-        sig = (Ek < 0) ? '-' : '+';
-        d1 = abs(d1);
-        d2 = abs(d2);
-        vprintfunc(" %c%d.%03d\n", sig, d1, d2);
+        printfloat(y_angle);
+        vprintfunc(",");
+        printfloat(Gyro_x);
+        vprintfunc(",");
+        printfloat(Ek);
+        vprintfunc("\n");
 
         // toggle b7 to output a cycle-test signal
         PORTB ^= 0x80;
@@ -767,16 +777,18 @@ ISR(TIMER1_COMPA_vect)
  * ADC result is left adjusted, so only ADCH needs to be read
  *
  */
+/*
 ISR(ADC_vect)
 {
     uBattery = ADCH;  // read battery voltage from ADC register
 }
+*/
 
 /* ----------------------------------------------------------------------------
  * main() control functions
  *
  * initialize IO: TWI, UART, timer and IO pins for H-bridge control
- * - TWI interface in master mode to angle infor from MPU_6050
+ * - TWI interface in master mode to read angle info from MPU_6050
  * - timer0 provides 2 PWM signals for motor control
  * - IO pins to control H-bridge direction
  * - UART to send/receive commands from host RaspberryPi
@@ -809,6 +821,16 @@ int main(void)
     else
         printstr_p(PSTR("MPU-60X0 not found\n"));
 
+    // print working parameters
+    vprintfunc("PID frequency %dHz\n", (uint8_t) PID_FREQ);
+    vprintfunc("PID Kp, Ki, Kd: ");
+    printfloat((float) KP);
+    vprintfunc(", ");
+    printfloat((float) KI);
+    vprintfunc(", ");
+    printfloat((float) KD);
+    vprintfunc("\n");
+
 #ifdef __SENSOR_TRACE__
     printstr_p(PSTR("*** no PID ***\n"));
 #endif
@@ -821,13 +843,16 @@ int main(void)
     // enable interrupts
     sei();
 
-    // setup PID constants
-    Kp   = KP;
-    Ki   = KI;
-    Kd   = KD;
-    lean = LEAN;
-    pwm_min = MOTOR_PWM_MIN;
+    // setup constants
+    Kp      = (float) KP;
+    Ki      = (float) KI;
+    Kd      = (float) KD;
+    lean    = (float) LEAN;
+
+    alpha   = (float) ALPHA;
     kalmanResetGuard = 0;
+
+    pwm_min = (int) MOTOR_PWM_MIN;
 
     // print command line prompt
     printstr_p(PSTR(PROMPT));
@@ -867,9 +892,9 @@ int main(void)
                 default:
                     if ( nCliIndex < CLI_BUFFER )
                     {
-                        if ( inChar != BS )                     // if character a back-space?
+                        if ( inChar != BS )                     // is character a back-space?
                             commandLine[nCliIndex++] = inChar;  // no, then store in command line buffer
-                        else if ( nCliIndex > 0 )               // yes, it is a back-space, but do we even have characters to remove?
+                        else if ( nCliIndex > 0 )               // yes, it is a back-space, but do we have characters to remove?
                         {
                             nCliIndex--;                        // yes, remove the character
                             commandLine[nCliIndex] = 0;
