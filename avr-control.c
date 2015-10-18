@@ -599,10 +599,9 @@ void resetKalmanFilter(float angleInit)
  * - compute PID
  * - set motor PWMs
  *
- * measured execution time. approx. 7mSec
+ * measured execution time. approx. 6.7mSec
  *
  */
-#ifndef __SENSOR_TRACE__
 ISR(TIMER1_COMPA_vect)
 {
     static uint8_t pwm, motor_dir, port_b;
@@ -658,7 +657,6 @@ ISR(TIMER1_COMPA_vect)
         // http://ozzmaker.com/2013/04/18/success-with-a-balancing-robot-using-a-raspberry-pi/
         //Ek = (alpha * (Ek_1 + (Gyro_x * PID_LOOP_TIME))) + ((1 - alpha) * y_angle);
 
-
         // PID calculation
         Ek += lean;                         // offset for frame leaning
         SEk += Ek;                          // sum of error for integral part
@@ -692,13 +690,24 @@ ISR(TIMER1_COMPA_vect)
         port_b = PORTB;
         port_b &= MOTOR_CLR_DIR;
         port_b |= motor_dir;
-        PORTB = port_b;
 
+#ifndef __SENSOR_TRACE__                    // if tracing is off then control the motors
+        PORTB = port_b;
         OCR0A = pwm;
         OCR0B = pwm;
+#endif  // trace is 'off'
 
         // toggle b7 to output a cycle-test signal
         PORTB ^= 0x80;
+
+#ifdef __SENSOR_TRACE__                     // is tracing is on then output some data
+        printfloat(y_angle);                // print raw angle value
+        vprintfunc(",");
+        printfloat(Gyro_x);                 // print gyro reading
+        vprintfunc(",");
+        printfloat(Ek);                     // print filtered angle value
+        vprintfunc("\n");
+#endif  // trace is 'on'
     }
     else
     {
@@ -707,69 +716,6 @@ ISR(TIMER1_COMPA_vect)
         kalmanResetGuard = 0;
     }
 }
-#else
-ISR(TIMER1_COMPA_vect)
-{
-    float   distance, y_angle;
-
-    if ( runFlag )
-    {
-        // toggle b7 to output a cycle-test signal
-        PORTB ^= 0x80;
-
-        // read accelerometer and gyro then scale
-        Accel_x = (float) read_mpu_2c(MPU_ADD, ACCEL_X) / ACCEL_SCALER;
-        Accel_y = (float) read_mpu_2c(MPU_ADD, ACCEL_Y) / ACCEL_SCALER;
-        Accel_z = (float) read_mpu_2c(MPU_ADD, ACCEL_Z) / ACCEL_SCALER;
-        Gyro_x  = (float) read_mpu_2c(MPU_ADD, GYRO_X) / GYRO_SCALER;   // gyro rate in [deg/sec]
-
-        // rotation calculation (http://www.hobbytronics.co.uk/accelerometer-info)
-        distance = sqrt(Accel_x*Accel_x + Accel_z*Accel_z);
-        y_angle = atan2(Accel_y, distance) * 57.2957795;    // convert angle from [rad] to [deg]
-
-        // check if platform is out of control limits
-        // if it is, then blink 'run' LED and exit PID control loop
-        if ( abs(y_angle) > PID_ANGLE_LIM )
-        {
-            blink++;
-            if ( blink > (PID_FREQ / LED_BLINK_RATE) )
-            {
-                PORTB ^= STAT_RUN;          // toggle 'run' LED
-                blink = 0;
-            }
-            PORTB &= MOTOR_CLR_DIR;         // stop motors
-            PORTB ^= 0x80;                  // toggle b7 cycle-test signal
-            return;
-        }
-        else
-        {
-            PORTB |= STAT_RUN;              // turn on 'run' LED
-            Ek = 0;
-            Ek_1 = y_angle;
-        }
-
-        // data filters
-
-        // complementary filter
-        //Ek = (alpha * (Ek_1 + (Gyro_x * PID_LOOP_TIME))) + ((1 - alpha) * y_angle);
-
-        // Kalman filter
-        Ek = kalmanFilter(y_angle, Gyro_x, PID_LOOP_TIME);
-
-        printfloat(y_angle);
-        vprintfunc(",");
-        printfloat(Gyro_x);
-        vprintfunc(",");
-        printfloat(Ek);
-        vprintfunc("\n");
-
-        // toggle b7 to output a cycle-test signal
-        PORTB ^= 0x80;
-    }
-    else
-        PORTB &= (~(STAT_RUN) | PB_PUP_INIT);   // turn off 'run' LED
-}
-#endif /* __SENSOR_TRACE__ */
 
 /* ----------------------------------------------------------------------------
  * This ISR will trigger when the ADC completes a conversion
