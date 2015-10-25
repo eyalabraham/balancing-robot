@@ -82,15 +82,23 @@
 /****************************************************************************
   Globals
 ****************************************************************************/
-static  volatile uint8_t    i2c_genCallActive = 0;
-static  volatile uint8_t    i2c_rx_busy       = 0;   // busy receiving
-static  volatile uint8_t    i2c_tx_busy       = 0;   // busy transmitting
-static  volatile uint8_t    rxIndex           = 0;   // index to data in rxBuffers
-static  volatile uint8_t    txIndex           = 0;   // index to data in txBuffers
-static           uint8_t    txDataCount       = 0;   // bytes to transmit
 
-static  uint8_t rxBuffer[TWI_BUFF_LEN];              // receive data buffer
-static  uint8_t txBuffer[TWI_BUFF_LEN];              // transmit data buffer
+// TWI slave globals
+static  volatile uint8_t i2c_genCallActive = 0;
+static  volatile uint8_t i2c_rx_busy       = 0;   // busy receiving
+static  volatile uint8_t i2c_tx_busy       = 0;   // busy transmitting
+static           uint8_t txDataCount       = 0;   // bytes to transmit
+static           uint8_t bytesToMove;
+
+// TWI master globals
+static           uint8_t slaveAddress;
+static           uint8_t data[2];
+
+// common mode globals
+static  volatile uint8_t rxIndex           = 0;   // index to data in rxBuffers
+static  volatile uint8_t txIndex           = 0;   // index to data in txBuffers
+static           uint8_t rxBuffer[TWI_BUFF_LEN];  // receive data buffer
+static           uint8_t txBuffer[TWI_BUFF_LEN];  // transmit data buffer
 
 /* ---------------------------------------------------------------------------
  * i2c_m_initialize()
@@ -100,7 +108,7 @@ static  uint8_t txBuffer[TWI_BUFF_LEN];              // transmit data buffer
  */
 void i2c_m_initialize(void)
 {
-    TWBR = 12;  // rate divisor to yield 100KHz SCL @ 4MHz CPU clock
+    TWBR = 2;   // rate divisor to yield 400KHz SCL @ 8MHz CPU clock
     TWSR = 0;
 }
 
@@ -113,12 +121,9 @@ void i2c_m_initialize(void)
  * number of bytes read on success
  *
  */
-int i2c_m_getData(uint8_t address, uint8_t *data, uint8_t byteCount)
+int i2c_m_getData(uint8_t address, uint8_t *data, int byteCount)
 {
-    uint8_t slaveAddress;
-    uint8_t rxIndex;
-
-    if ( byteCount > TWI_BUFF_LEN )
+    if ( (byteCount > TWI_BUFF_LEN) || (byteCount <= 0) )
         return -1;
 
     slaveAddress = (address << 1) + TW_READ;
@@ -150,20 +155,19 @@ MASTER_RX_LOOP:
         break;
 
     case TWI_MRX_ADR_ACK:               // -- 0x40
-        if ( rxIndex < (byteCount-1))
-            TWCR = set_m_TWCR(0, 0, 1, 1); // next data byte will be received and ACK will be returned
+        if ( rxIndex < (byteCount-1))   // ACK received for SLA+R, wait for data if buffer not full
+            TWCR = set_m_TWCR(0, 0, 1, 1); // byte will be received and ACK will be returned
         else
-            TWCR = set_m_TWCR(0, 0, 1, 0); // next data byte will be received and NACK will be returned
+            TWCR = set_m_TWCR(0, 0, 1, 0); // byte will be received and NACK will be returned, buffer will be full (-> status 0x58)
         goto MASTER_RX_LOOP;
         break;
 
     case TWI_MRX_DATA_ACK:              // -- 0x50
         rxBuffer[rxIndex++] = TWDR;     // read byte from TWDR
-        if ( rxIndex < (byteCount-1))      // check if there is room in the buffer
-            TWCR = set_m_TWCR(0, 0, 1, 1); // yes, data byte will be received and ACK will be returned
+        if ( rxIndex < (byteCount-1))   // last byte space left in buffer?
+            TWCR = set_m_TWCR(0, 0, 1, 1); // no, next byte will be received and ACK will be returned
         else
-            TWCR = set_m_TWCR(0, 0, 1, 0); // room for one more byte is left in the buffer,
-                                           // next data byte will be received but NACK will be returned (-> status 0x58)
+            TWCR = set_m_TWCR(0, 0, 1, 0); // yes, next byte received and NACK will be returned, buffer will be full (-> status 0x58)
         goto MASTER_RX_LOOP;
         break;
 
@@ -192,12 +196,9 @@ MASTER_RX_LOOP:
  * function returns data bytes sent or -1 on error.
  *
  */
-int i2c_m_setData(uint8_t address, uint8_t *data, uint8_t byteCount)
+int i2c_m_setData(uint8_t address, uint8_t *data, int byteCount)
 {
-    uint8_t slaveAddress;
-    uint8_t txIndex;
-
-    if ( byteCount > TWI_BUFF_LEN )
+    if ( (byteCount > TWI_BUFF_LEN) || (byteCount <= 0) )
         return -1;
 
     slaveAddress = (address << 1) + TW_WRITE;
@@ -265,12 +266,10 @@ MASTER_TX_LOOP:
  */
 int i2c_m_sendByte(uint8_t address, uint8_t command, uint8_t byte)
 {
-    uint8_t data[2];
-
     data[0] = command;
     data[1] = byte;
 
-    return i2c_m_setData(address, data, 2 * sizeof(uint8_t));
+    return i2c_m_setData(address, data, (int) (2 * sizeof(uint8_t)));
 }
 
 /* ---------------------------------------------------------------------------
@@ -284,10 +283,28 @@ int i2c_m_sendByte(uint8_t address, uint8_t command, uint8_t byte)
  */
 int i2c_m_getByte(uint8_t address, uint8_t command, uint8_t *byte)
 {
-
-    if ( i2c_m_setData(address, &command, sizeof(uint8_t)) > 0 )  // send the command
+    if ( i2c_m_setData(address, &command, (int) sizeof(uint8_t)) > 0 )  // send the command
     {
-        return i2c_m_getData(address, byte, sizeof(uint8_t));     // if successful, then read returned data from slave
+        return i2c_m_getData(address, byte, (int) sizeof(uint8_t));     // if successful, then read returned data from slave
+    }
+
+    return -1;
+}
+
+/* ---------------------------------------------------------------------------
+ * i2c_m_burstRead()
+ *
+ * burst read a data block from the slave. this requires a slave 'address'
+ * and a 'command' to instruct the slave device which data to send.
+ * data is returned in 'bytes' array.
+ * function returns '-1' 0n failure, and byte count on success.
+ *
+ */
+int i2c_m_burstRead(uint8_t address, uint8_t command, uint8_t count, uint8_t *bytes)
+{
+    if ( i2c_m_setData(address, &command, (int) sizeof(uint8_t)) > 0 )  // send the command
+    {
+        return i2c_m_getData(address, bytes, (int) count);              // if successful, then read returned data from slave
     }
 
     return -1;
@@ -327,8 +344,6 @@ void i2c_s_initialize(uint8_t address, uint8_t answerGenCall)
  */
 int i2c_s_getData(uint8_t *data, uint8_t byteCount)
 {
-    uint8_t bytesToMove;
-
     if ( byteCount > TWI_BUFF_LEN )
         return 0;
 

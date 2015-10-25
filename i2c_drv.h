@@ -17,14 +17,15 @@
 /****************************************************************************
   Definitions
 ****************************************************************************/
-#define TWI_BUFF_LEN    8 // data byte buffer
+#define TWI_BUFF_LEN    14 // data byte buffer
 
 /****************************************************************************
   Function prototypes
 ****************************************************************************/
 void i2c_m_initialize(void);
-int i2c_m_getData(uint8_t, uint8_t *, uint8_t);
-int i2c_m_setData(uint8_t, uint8_t *, uint8_t);
+int i2c_m_getData(uint8_t, uint8_t *, int);
+int i2c_m_setData(uint8_t, uint8_t *, int);
+int i2c_m_burstRead(uint8_t, uint8_t, uint8_t, uint8_t*);
 
 int i2c_m_sendByte(uint8_t, uint8_t, uint8_t);
 int i2c_m_getByte(uint8_t, uint8_t, uint8_t *);

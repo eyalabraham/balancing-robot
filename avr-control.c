@@ -101,20 +101,21 @@
 #define     GYRO_Y          0x45
 #define     GYRO_Z          0x47
 #define     GYRO_SCALER     131.0   // divisor to scale accelerometer reading
+#define     UINT2C(v)       ( (v >= 0x8000) ?  -((65535 - v) + 1) : v )  // convert to signed integer
 
 // PID constants default
-#define     KP              25.0    // PID constants
+#define     KP              10.0    // PID constants
 #define     KI              0.0
 #define     KD              0.0
 #define     MAX_INTEG       100.0
 #define     RESET_INTEG     0.5
 #define     LEAN            0.0     // platform leaning in [deg]
-#define     PID_ANGLE_LIM   30.0    // stop running PID outside this angle in [deg]
+#define     PID_ANGLE_LIM   20.0    // stop running PID outside this angle in [deg]
 
 // PID frequency Timer1 constant (sec 15.9.2 page 126..126)
 #define     PID_FREQ        25      // <------PID frequency in Hz
 #define     TIM1_FREQ_CONST ((PRE_SCALER / PID_FREQ) -1)
-#define     PRE_SCALER      3906    // 4MHz clock divided by 1024 pre scaler
+#define     PRE_SCALER      7812    // 8MHz clock divided by 1024 pre scaler
 #define     LED_BLINK_RATE  2       // LED blink rate in Hz
 
 // complementary filter constant
@@ -188,9 +189,26 @@ void reset(void) __attribute__((naked)) __attribute__((section(".init3")));
   Globals
 ****************************************************************************/
 volatile    uint8_t uBattery = 0;   // battery voltage read from ADC
+volatile    int     nSensorErr = 0; // MPU-6050 read error
 uint8_t     runFlag = 0;            // run flag reflecting the go/no-go switch state
 int         nDoPrompt = 1;          // print prompt
 int         blink;                  // LED blink rate
+
+// union to allow register burst read
+#define     MPU_REGS        5*sizeof(uint16_t)  // MPU register data buffer size in bytes
+union mpu6050_t                                 // union data structure
+{
+    struct mpuReg_t
+    {
+        uint16_t    ACCEL_XOUT;                 // register list
+        uint16_t    ACCEL_YOUT;
+        uint16_t    ACCEL_ZOUT;
+        uint16_t    TEMP_OUT;
+        uint16_t    GYRO_XOUT;
+    } mpuReg;
+
+    uint8_t     mpuData[MPU_REGS];              // data buffer reference
+} mpu6050;
 
 float Accel_x;                  // accelerometer X, TIMER1 ISR global variable
 float Accel_y;                  // accelerometer Y, TIMER1 ISR global variable
@@ -231,9 +249,9 @@ float P_00    = 0.0,
  */
 void ioinit(void)
 {
-    // reconfigure system clock scaler to 4MHz and/or source
+    // reconfigure system clock scaler to 8MHz
     CLKPR = 0x80;   // change clock scaler to divide by 2 (sec 8.12.2 p.37)
-    CLKPR = 0x01;
+    CLKPR = 0x00;
 
     // initialize UART interface to 19200 BAUD, 8 bit, 1 stop, no parity
     uart_initialize();
@@ -243,7 +261,7 @@ void ioinit(void)
 
     // initialize Timer0 to provide 2 independent PWM signals for motor control
     // (section 14.7.3 p.101)
-    // - base PWM frequency at 15625Hz -> 1953.125Hz -> 244.14Hz
+    // - base PWM frequency at 500Hz
     // - OC0A -> right motor
     // - OC0B -> left motor
     OCR0A  = MOTOR_PWM_MIN; // initialize output compare registers
@@ -251,7 +269,7 @@ void ioinit(void)
     TCNT0  = 0;    // initialize counter register
     TIMSK0 = 0;    // no interrupts
     TCCR0A = 0xa3; // 'fast PWM' clear OC0x on compare
-    TCCR0B = 0x02; // compare on OCRx, use clock with scaler=2 (pwm Fc=2KHz) and start timer
+    TCCR0B = 0x03; // compare on OCRx, use clock with scaler=3 (pwm Fc=500Hz) and start timer
 
     DDRD   = 0x60; // enable PD5 and PD6 as outputs so that OCRx PWM signals are "visible"
 
@@ -262,7 +280,7 @@ void ioinit(void)
     // - calculate PID values
     // - drive PWM
     TCNT1  = 0;                 // zero initial counter value
-    OCR1A  = TIM1_FREQ_CONST;   // OCR1A value for 20Hz
+    OCR1A  = TIM1_FREQ_CONST;   // OCR1A value for PID ISR frequency
     TCCR1A = 0x00;              // CTC mode with OC1x pins kept in normal IO port mode (not used by timer)
     TCCR1B = 0x0D;              // use OCR1A for compare and internal clock with scaler=1024 (256uSec resolution) and start timer
     TCCR1C = 0;
@@ -599,7 +617,7 @@ void resetKalmanFilter(float angleInit)
  * - compute PID
  * - set motor PWMs
  *
- * measured execution time. approx. 6.7mSec
+ * measured execution time. approximately 1.8mSec
  *
  */
 ISR(TIMER1_COMPA_vect)
@@ -613,15 +631,34 @@ ISR(TIMER1_COMPA_vect)
         // toggle b7 to output a cycle-test signal
         PORTB ^= 0x80;
 
-        // read accelerometer and gyro then scale
-        Accel_x = (float) read_mpu_2c(MPU_ADD, ACCEL_X) / ACCEL_SCALER;
-        Accel_y = (float) read_mpu_2c(MPU_ADD, ACCEL_Y) / ACCEL_SCALER;
-        Accel_z = (float) read_mpu_2c(MPU_ADD, ACCEL_Z) / ACCEL_SCALER;
-        Gyro_x  = (float) read_mpu_2c(MPU_ADD, GYRO_X) / GYRO_SCALER;   // gyro rate in [deg/sec]
+        // burst read accelerometer and gyro
+        nSensorErr = i2c_m_burstRead(MPU_ADD, ACCEL_X, MPU_REGS, mpu6050.mpuData);
+
+        pwm = mpu6050.mpuData[0];   // convert to little endian
+        mpu6050.mpuData[0] = mpu6050.mpuData[1];
+        mpu6050.mpuData[1] = pwm;
+
+        pwm = mpu6050.mpuData[2];
+        mpu6050.mpuData[2] = mpu6050.mpuData[3];
+        mpu6050.mpuData[3] = pwm;
+
+        pwm = mpu6050.mpuData[4];
+        mpu6050.mpuData[4] = mpu6050.mpuData[5];
+        mpu6050.mpuData[5] = pwm;
+
+        pwm = mpu6050.mpuData[8];
+        mpu6050.mpuData[8] = mpu6050.mpuData[9];
+        mpu6050.mpuData[9] = pwm;
+
+        // scale readings
+        Accel_x = (float) UINT2C(mpu6050.mpuReg.ACCEL_XOUT) / (float) ACCEL_SCALER;
+        Accel_y = (float) UINT2C(mpu6050.mpuReg.ACCEL_YOUT) / (float) ACCEL_SCALER;
+        Accel_z = (float) UINT2C(mpu6050.mpuReg.ACCEL_ZOUT) / (float) ACCEL_SCALER;
+        Gyro_x  = (float) UINT2C(mpu6050.mpuReg.GYRO_XOUT) / (float) GYRO_SCALER;   // gyro rate in [deg/sec]
 
         // rotation calculation (http://www.hobbytronics.co.uk/accelerometer-info)
         distance = sqrt(Accel_x*Accel_x + Accel_z*Accel_z);
-        y_angle = atan2(Accel_y, distance) * 57.2957795;    // convert angle from [rad] to [deg]
+        y_angle = atan2(Accel_y, distance) * (float) 57.2957795;    // convert angle from [rad] to [deg]
 
         // check if platform is out of control-limits and inhibit PID
         // if it is, then blink 'run' LED and exit PID control loop
@@ -646,7 +683,9 @@ ISR(TIMER1_COMPA_vect)
                 resetKalmanFilter(y_angle);
                 kalmanResetGuard = 1;
             }
-            Ek = 0;
+            Ek   = 0;
+            SEk  = 0;
+            DEk  = 0;
             Ek_1 = y_angle;
         }
 
@@ -659,8 +698,8 @@ ISR(TIMER1_COMPA_vect)
 
         // PID calculation
         Ek += lean;                         // offset for frame leaning
-        SEk += Ek;                          // sum of error for integral part
-        DEk = Ek - Ek_1;                    // difference of errors for differential part
+        SEk += Ek * PID_LOOP_TIME;          // sum of error for integral part
+        DEk = (Ek - Ek_1) / PID_LOOP_TIME;  // difference of errors for differential part
         Ek_1 = Ek;
 
         if ( abs(SEk) > MAX_INTEG )         // prevent integrator wind-up
@@ -714,6 +753,7 @@ ISR(TIMER1_COMPA_vect)
         PORTB &= MOTOR_CLR_DIR;                 // stop motors
         PORTB &= (~(STAT_RUN) | PB_PUP_INIT);   // turn off 'run' LED
         kalmanResetGuard = 0;
+        nSensorErr = 0;
     }
 }
 
@@ -818,6 +858,10 @@ int main(void)
         else
             PORTB &= (~(STAT_TOGG_BATT) | PB_PUP_INIT);
         
+        // sensor error
+        if ( nSensorErr < 0 )
+            printstr_p(PSTR("*** sense error\n"));
+
         // sample UART input and act on command line
         if ( uart_ischar() )
         {

@@ -41,7 +41,7 @@ void uart_initialize()
     UCSR0A = _BV(U2X0);                 // double baud rate (sec 19.10 p.195)
     UCSR0B = _BV(RXCIE0) | _BV(RXEN0) | _BV(TXEN0);   // enable Tx and Rx
     UCSR0C = _BV(UCSZ01) | _BV(UCSZ00); // 8 data bits, 1 stop, no parity
-    UBRR0 = 25;                         // 19200 baud with the lowest error
+    UBRR0 = 51;                         // 19200 baud with the lowest error
 
     inIndex = 0;
     outIndex = 0;
