@@ -35,6 +35,8 @@ volatile    int bytesInBuffer;
 /* ---------------------------------------------------------------------------
  * uart_initialize()
  *
+ * Hard coded UART setup: 8 data bits, 1 stop, no parity, 19,200 BAUD
+ *
  */
 void uart_initialize()
 {

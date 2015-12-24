@@ -23,12 +23,14 @@
  * ATmega AVR IO
  * ---------------
  * right motor PWM          OC0A        pin 12      out
- * right motor direction    PB0..PB1    pin 14..15  out
  * left motor PWM           OC0B        pin 11      out
- * left motor direction     PB2..PB3    pin 16..16  out
- * go/no-go select          PB4         pin 18      in
- * Batt low/ok              PB5         pin 19      out
- * run/not-run              PB6         pin 9       out
+ * right motor direction    PB0..PB1    pin 14..15  out
+ * PID timing               PB2         pin 16
+ * left motor direction     PB6..PB7    pin 9..10   out
+ *
+ * Batt low/ok              PD2         pin 4       out
+ * run/not-run              PD3         pin 5       out
+ *
  * TWI                      SCL         pin 28      out
  * TWI                      SDA         pin 27      in/out
  * Batt sense               ADC0        pin 23      analog in
@@ -39,26 +41,29 @@
  * |  |  |  |  |  |  |  |
  * |  |  |  |  |  |  |  +--- 'o' right motor dir \ 0, 3=stop, 1=fwd, 2=rev
  * |  |  |  |  |  |  +------ 'o' right motor dir /
- * |  |  |  |  |  +--------- 'o' left motor dir  \ 0, 3=stop, 1=fwd, 2=rev
- * |  |  |  |  +------------ 'o' left motor dir  /
- * |  |  |  +--------------- 'i' go/no-go          PUP enabled, 0=no-go, 1=go
- * |  |  +------------------ 'o' batt. ok/low      0=batt.ok,1=batt.low (red LED)
- * |  +--------------------- 'o' run/not-run       0=not running,1=running (green LED)
- * +------------------------ 'o' cycle test point
+ * |  |  |  |  |  +--------- 'o' PID cycle test point
+ * |  |  |  |  +------------ \
+ * |  |  |  +---------------  | in circuit serial programmer
+ * |  |  +------------------ /
+ * |  +--------------------- 'o' left motor dir  \ 0, 3=stop, 1=fwd, 2=rev
+ * +------------------------ 'o' left motor dir  /
+ *
+ * Port D bit assignment
+ *
+ * b7 b6 b5 b4 b3 b2 b1 b0
+ * |  |  |  |  |  |  |  |
+ * |  |  |  |  |  |  |  +--- UART Rx
+ * |  |  |  |  |  |  +------ UART Tx
+ * |  |  |  |  |  +--------- 'o' batt. ok/low      0=batt.ok,1=batt.low (red LED)
+ * |  |  |  |  +------------ 'o' run/not-run       0=not running,1=running (red LED)
+ * |  |  |  +--------------- -
+ * |  |  +------------------ '0' OC0A right PWM
+ * |  +--------------------- '0' OC0B left PWM
+ * +------------------------ -
  *
  * note: all references to data sheet are for ATmega 328P Rev. 8161D–AVR–10/09
  *
- * Command line list:
- * 
- *   help                         - print help text
- *   get <kp> | <ki> | <kd>       - print one of the PID constants as: fixed-point, float
- *   get lean                     - print frame leaning value as: fixed-point, float
- *   get batt                     - print battery voltage in float
- *   get run                      - print go/no-go switch state: 1 or 0
- *   set prompt <on> | <off>      - set prompt state in 'nDoPrompt'
- *   set [<kp> | <ki> | <kd>] <n> - set one of the PID constants with fixed-point number (format Q10.5)
- *   set lean <lean>              - set frame leaning level with fixed-point number (format Q10.5)
- *   set pwmmin <pwm_min>         - set min. pwm value
+ * Command line list see source or type 'help'<CR>
  * 
  */
 
@@ -80,7 +85,6 @@
 // debug print to UART port definition
 // UART is assumed to be defined and initialized
 //#define     __DEBUG_PRINT__
-//#define     __SENSOR_TRACE__
 
 // Gyro/Accel I2C definitions
 #define     MPU_ADD         0x68    // I2C bus address for Gyro/Accel unit
@@ -104,13 +108,13 @@
 #define     UINT2C(v)       ( (v >= 0x8000) ?  -((65535 - v) + 1) : v )  // convert to signed integer
 
 // PID constants default
-#define     KP              10.0    // PID constants
+#define     KP              0.0     // PID constants
 #define     KI              0.0
 #define     KD              0.0
 #define     MAX_INTEG       100.0
-#define     RESET_INTEG     0.5
+#define     RESET_INTEG     0.25
 #define     LEAN            0.0     // platform leaning in [deg]
-#define     PID_ANGLE_LIM   20.0    // stop running PID outside this angle in [deg]
+#define     PID_ANGLE_LIM   30.0    // stop running PID outside this angle in [deg]
 
 // PID frequency Timer1 constant (sec 15.9.2 page 126..126)
 #define     PID_FREQ        25      // <------PID frequency in Hz
@@ -124,26 +128,30 @@
 // kalman filter definitions
 #define     PID_LOOP_TIME   ((float)(1/(float)PID_FREQ))
 
-// port B initialization
-#define     PB_DDR_INIT     0xef    // port data direction
-#define     PB_PUP_INIT     0x10    // port input pin pull-up
+// IO ports B and D initialization
+#define     PB_DDR_INIT     0xc7    // port data direction
+#define     PB_PUP_INIT     0x00    // port input pin pull-up
 #define     PB_INIT         0x00    // port initial values
+
+#define     PD_DDR_INIT     0x6e    // enable PD5 & 6 as outputs for OCRx PWM, PD2 & 3 for LED signals
+#define     PD_PUP_INIT     0x00    // port input pin pull-up
+#define     PD_INIT         0x00    // port initial values
 
 // motor direction/state bit masks
 #define     MOTOR_CLR_RIGHT 0xfc    // clear right motor direction bits (AND mask)
-#define     MOTOR_CLR_LEFT  0xf3    // clear left motor direction bits (AND mask)
-#define     MOTOR_CLR_DIR   0xf0    // clear all direction bits (AND mask)
+#define     MOTOR_CLR_LEFT  0x3f    // clear left motor direction bits (AND mask)
+#define     MOTOR_CLR_DIR   0x3c    // clear all direction bits (AND mask)
 #define     MOTOR_REV_RIGHT 0x01    // right motor reverse (OR masks)
 #define     MOTOR_FWD_RIGHT 0x02    // right motor forward
-#define     MOTOR_REV_LEFT  0x04    // left motor reverse
-#define     MOTOR_FWD_LEFT  0x08    // left motor forward
+#define     MOTOR_REV_LEFT  0x40    // left motor reverse
+#define     MOTOR_FWD_LEFT  0x80    // left motor forward
 #define     MOTOR_PWM_MIN   0       // initial/minimum PWM value
 #define     MOTOR_PWM_MAX   255
 
 // misc masks
-#define     STAT_TOGG_BATT  0x20    // toggle battery status (XOR mask)
-#define     STAT_RUN        0x40    // toggle running status (XOR mask)
-#define     STAT_RUN_SW     0x10    // run flag port pin test mask
+#define     STAT_TOGG_BATT  0x04    // toggle battery status (XOR mask)
+#define     STAT_RUN        0x08    // toggle running status (XOR mask)
+#define     LOOP_TEST_POINT 0x04    // toggle PID loop timing test point
 
 // battery voltage macros
 #define     BATT_LVL_65     164     // battery threshold levels
@@ -151,6 +159,7 @@
 #define     BATT_LVL_55     139
 #define     BATT_LVL_70     177     // for LiPo batteries
 #define     BATT_CONVRT     0.0394749 // ADC0 battery voltage conversion ratio
+#define     BATT_BIAS       0.0     // bias to correct battery reading
 
 // UART command line processing
 #define     CLI_BUFFER      80
@@ -177,6 +186,7 @@
   set [<kp> | <ki> | <kd>] <n> - set PID constants\n\
   set lean <lean>              - set frame leaning\n\
   set pwmmin <pwm_min>         - set min. pwm value\n\
+  set run <1|0>                - set run flag to 1=go, 0=stop\n\
   set alpha <a>                - set filter alpha\n"
 
 /****************************************************************************
@@ -195,7 +205,7 @@ int         nDoPrompt = 1;          // print prompt
 int         blink;                  // LED blink rate
 
 // union to allow register burst read
-#define     MPU_REGS        5*sizeof(uint16_t)  // MPU register data buffer size in bytes
+#define     MPU_REGS        sizeof(struct mpuReg_t)  // MPU register data buffer size in bytes
 union mpu6050_t                                 // union data structure
 {
     struct mpuReg_t
@@ -205,6 +215,7 @@ union mpu6050_t                                 // union data structure
         uint16_t    ACCEL_ZOUT;
         uint16_t    TEMP_OUT;
         uint16_t    GYRO_XOUT;
+        uint16_t    GYRO_YOUT;
     } mpuReg;
 
     uint8_t     mpuData[MPU_REGS];              // data buffer reference
@@ -214,6 +225,7 @@ float Accel_x;                  // accelerometer X, TIMER1 ISR global variable
 float Accel_y;                  // accelerometer Y, TIMER1 ISR global variable
 float Accel_z;                  // accelerometer Z, TIMER1 ISR global variable
 float Gyro_x;                   // gyroscope X, TIMER1 ISR global variable
+float Gyro_y;                   // gyroscope X, TIMER1 ISR global variable
 
 float alpha = (float) ALPHA;    // complementary filter constant
 
@@ -250,7 +262,7 @@ float P_00    = 0.0,
 void ioinit(void)
 {
     // reconfigure system clock scaler to 8MHz
-    CLKPR = 0x80;   // change clock scaler to divide by 2 (sec 8.12.2 p.37)
+    CLKPR = 0x80;   // change clock scaler (sec 8.12.2 p.37)
     CLKPR = 0x00;
 
     // initialize UART interface to 19200 BAUD, 8 bit, 1 stop, no parity
@@ -271,8 +283,6 @@ void ioinit(void)
     TCCR0A = 0xa3; // 'fast PWM' clear OC0x on compare
     TCCR0B = 0x03; // compare on OCRx, use clock with scaler=3 (pwm Fc=500Hz) and start timer
 
-    DDRD   = 0x60; // enable PD5 and PD6 as outputs so that OCRx PWM signals are "visible"
-
     // initialize Timer1 to provide a periodic interrupt for PID
     // with Clear Timer on Compare Match (CTC) Mode (sec 15.9.2 p.125)
     // the interrupt routine will drive the PID control loop:
@@ -287,16 +297,18 @@ void ioinit(void)
     TIMSK1 = 0x02;              // interrupt on OCR1A match
 
     // initialize ADC converter input ADC0
-    /*
     ADMUX  = 0x60;  // external AVcc reference, left adjusted result, ADC0 source
-    ADCSRA = 0xEF;  // enable auto-triggered conversion and interrupts, ADC clock 31.25KHz
+    ADCSRA = 0xEF;  // enable auto-triggered conversion and interrupts, ADC clock 62.5KHz @ 8MKz system clock
     ADCSRB = 0x00;  // auto trigger source is free-running
-    */
 
-    // initialize general IO pins for output
+    // initialize general IO PB and PD pins for output
     // - PB0, PB1: output, no pull-up, right and left motor fwd/rev control
+    // -
     DDRB  = PB_DDR_INIT;            // PB pin directions
     PORTB = PB_INIT | PB_PUP_INIT;  // initial value of pins is '0', and input with pull-up
+
+    DDRD   = PD_DDR_INIT;           // PD data direction
+    PORTD  = PD_INIT | PD_PUP_INIT; // initial value of pins is '0', and input with pull-up
 }
 
 /* ----------------------------------------------------------------------------
@@ -323,6 +335,7 @@ void reset(void)
  * read 2's complement accelerometer data
  *
  */
+/*
 int read_mpu_2c(uint8_t address, uint8_t command)
 {
     static uint8_t     high;
@@ -339,6 +352,7 @@ int read_mpu_2c(uint8_t address, uint8_t command)
     else
         return value;
 }
+*/
 
 /* ----------------------------------------------------------------------------
  * printstr()
@@ -483,6 +497,13 @@ int process_cli(char *commandLine)
         {
             alpha = atof(tokens[2]);
         }
+        // set run flag
+        else if ( strcmp(tokens[1], "run") == 0 )
+        {
+            runFlag = atoi(tokens[2]);
+            if ( runFlag > 1 || runFlag < 0 )   // fix flag to be '0' or '1'
+                runFlag = 1;
+        }
         // set pwmmin <pwm_min>         - set min. pwm value
         else if ( strcmp(tokens[1], "pwmmin") == 0 )
         {
@@ -528,14 +549,14 @@ int process_cli(char *commandLine)
             printfloat(alpha);
             vprintfunc("\n");
         }
-        // get trace                - dump trace buffer
+        // get batt                 - battery voltage
         else if ( strcmp(tokens[1], "batt") == 0 )
         {
-            fbatt  = ((float) uBattery * (float) BATT_CONVRT);
+            fbatt  = ((float) uBattery * (float) BATT_CONVRT) + (float) BATT_BIAS;
             printfloat(fbatt);
             vprintfunc("\n");
         }
-        // get run                  - print go/no-go switch state: 1 or 0
+        // get run                  - print go/no-go state: 1 or 0
         else if ( strcmp(tokens[1], "run") == 0 )
         {
             vprintfunc("%d\n", (runFlag ? 1 : 0));
@@ -624,12 +645,12 @@ ISR(TIMER1_COMPA_vect)
 {
     static uint8_t pwm, motor_dir, port_b;
     static int     motor_power, mp;
-    static float   distance, y_angle;
+    static float   distance, pitch;
 
     if ( runFlag )
     {
         // toggle b7 to output a cycle-test signal
-        PORTB ^= 0x80;
+        PORTB ^= LOOP_TEST_POINT;
 
         // burst read accelerometer and gyro
         nSensorErr = i2c_m_burstRead(MPU_ADD, ACCEL_X, MPU_REGS, mpu6050.mpuData);
@@ -646,71 +667,73 @@ ISR(TIMER1_COMPA_vect)
         mpu6050.mpuData[4] = mpu6050.mpuData[5];
         mpu6050.mpuData[5] = pwm;
 
-        pwm = mpu6050.mpuData[8];
-        mpu6050.mpuData[8] = mpu6050.mpuData[9];
-        mpu6050.mpuData[9] = pwm;
+        pwm = mpu6050.mpuData[10];
+        mpu6050.mpuData[10] = mpu6050.mpuData[9];
+        mpu6050.mpuData[11] = pwm;
 
         // scale readings
         Accel_x = (float) UINT2C(mpu6050.mpuReg.ACCEL_XOUT) / (float) ACCEL_SCALER;
         Accel_y = (float) UINT2C(mpu6050.mpuReg.ACCEL_YOUT) / (float) ACCEL_SCALER;
         Accel_z = (float) UINT2C(mpu6050.mpuReg.ACCEL_ZOUT) / (float) ACCEL_SCALER;
-        Gyro_x  = (float) UINT2C(mpu6050.mpuReg.GYRO_XOUT) / (float) GYRO_SCALER;   // gyro rate in [deg/sec]
+        Gyro_y  = (float) UINT2C(mpu6050.mpuReg.GYRO_YOUT) / (float) GYRO_SCALER;   // gyro rate in [deg/sec]
 
         // rotation calculation (http://www.hobbytronics.co.uk/accelerometer-info)
-        distance = sqrt(Accel_x*Accel_x + Accel_z*Accel_z);
-        y_angle = atan2(Accel_y, distance) * (float) 57.2957795;    // convert angle from [rad] to [deg]
+        distance = sqrt(Accel_y*Accel_y + Accel_z*Accel_z);
+        pitch = atan2(Accel_x, distance) * (float) 57.2957795;    // convert angle from [rad] to [deg]
 
         // check if platform is out of control-limits and inhibit PID
         // if it is, then blink 'run' LED and exit PID control loop
-        if ( abs(y_angle) > PID_ANGLE_LIM )
+        if ( abs(pitch) > PID_ANGLE_LIM )
         {
             blink++;
             if ( blink > (PID_FREQ / LED_BLINK_RATE) )
             {
-                PORTB ^= STAT_RUN;          // toggle 'run' LED
+                PORTD ^= STAT_RUN;          // toggle 'run' LED
                 blink = 0;
             }
             PORTB &= MOTOR_CLR_DIR;         // stop motors
-            PORTB ^= 0x80;                  // toggle b7 cycle-test signal
+            PORTB ^= LOOP_TEST_POINT;       // toggle cycle-test signal
             kalmanResetGuard = 0;           // reset once when existing PID inhibit state
             return;
         }
         else
         {
-            PORTB |= STAT_RUN;              // turn on 'run' LED
+            PORTD |= STAT_RUN;              // turn on 'run' LED
             if ( !kalmanResetGuard )        // reset only once entering back into active PID
             {
-                resetKalmanFilter(y_angle);
+                resetKalmanFilter(pitch);
                 kalmanResetGuard = 1;
             }
-            Ek   = 0;
-            SEk  = 0;
-            DEk  = 0;
-            Ek_1 = y_angle;
+            Ek   = 0.0;
+            SEk  = 0.0;
+            DEk  = 0.0;
+            Ek_1 = pitch;
         }
 
         // Kalman filter
-        Ek = kalmanFilter(y_angle, Gyro_x, PID_LOOP_TIME);
+        Ek = kalmanFilter(pitch, Gyro_y, PID_LOOP_TIME);
 
         // Complementary Filer
         // http://ozzmaker.com/2013/04/18/success-with-a-balancing-robot-using-a-raspberry-pi/
-        //Ek = (alpha * (Ek_1 + (Gyro_x * PID_LOOP_TIME))) + ((1 - alpha) * y_angle);
+        //Ek = (alpha * (Ek_1 + (Gyro_y * PID_LOOP_TIME))) + ((1 - alpha) * pitch);
 
         // PID calculation
-        Ek += lean;                         // offset for frame leaning
-        SEk += Ek * PID_LOOP_TIME;          // sum of error for integral part
-        DEk = (Ek - Ek_1) / PID_LOOP_TIME;  // difference of errors for differential part
+        // source: https://en.wikipedia.org/wiki/PID_controller#Discrete_implementation
+        Ek  += lean;                        // offset for frame leaning
+        SEk += Ek;                          // sum of error for integral part
+        DEk  = (Ek - Ek_1);                 // difference of errors for differential part
         Ek_1 = Ek;
 
-        if ( abs(SEk) > MAX_INTEG )         // prevent integrator wind-up
-            SEk = copysign((float) MAX_INTEG, SEk);
-        //if ( Ek < RESET_INTEG )             // integrator reset
-        //    SEk = 0.0;
+        if ( SEk > MAX_INTEG )              // prevent integrator wind-up
+            SEk = MAX_INTEG;
 
-        Uk = Kp*Ek + Ki*SEk + Kd*DEk;       // calculate PID
-        motor_power = round(Uk);            // convert to integer
+        if ( SEk < -MAX_INTEG )
+            SEk = -MAX_INTEG;
+
+        Uk   = Kp*Ek + Ki*SEk + Kd*DEk;     // calculate PID
 
         // setup motor turn direction
+        motor_power = round(Uk);            // convert to integer
         if ( motor_power < 0 )
             motor_dir = MOTOR_REV_RIGHT + MOTOR_REV_LEFT;
         else if ( motor_power > 0 )
@@ -730,28 +753,24 @@ ISR(TIMER1_COMPA_vect)
         port_b &= MOTOR_CLR_DIR;
         port_b |= motor_dir;
 
-#ifndef __SENSOR_TRACE__                    // if tracing is off then control the motors
         PORTB = port_b;
         OCR0A = pwm;
         OCR0B = pwm;
-#endif  // trace is 'off'
 
-        // toggle b7 to output a cycle-test signal
-        PORTB ^= 0x80;
+        // toggle cycle-test signal
+        PORTB ^= LOOP_TEST_POINT;
 
-#ifdef __SENSOR_TRACE__                     // is tracing is on then output some data
-        printfloat(y_angle);                // print raw angle value
+#ifdef __DEBUG_PRINT__                      // if tracing is on then output some data
+        printfloat(Ek);                     // print angle value (PV = Process Variable)
         vprintfunc(",");
-        printfloat(Gyro_x);                 // print gyro reading
-        vprintfunc(",");
-        printfloat(Ek);                     // print filtered angle value
+        printfloat(Uk);                     // print control value (OP = Output)
         vprintfunc("\n");
 #endif  // trace is 'on'
     }
     else
     {
         PORTB &= MOTOR_CLR_DIR;                 // stop motors
-        PORTB &= (~(STAT_RUN) | PB_PUP_INIT);   // turn off 'run' LED
+        PORTD &= (~(STAT_RUN) | PB_PUP_INIT);   // turn off 'run' LED
         kalmanResetGuard = 0;
         nSensorErr = 0;
     }
@@ -763,12 +782,10 @@ ISR(TIMER1_COMPA_vect)
  * ADC result is left adjusted, so only ADCH needs to be read
  *
  */
-/*
 ISR(ADC_vect)
 {
     uBattery = ADCH;  // read battery voltage from ADC register
 }
-*/
 
 /* ----------------------------------------------------------------------------
  * main() control functions
@@ -817,10 +834,6 @@ int main(void)
     printfloat((float) KD);
     vprintfunc("\n");
 
-#ifdef __SENSOR_TRACE__
-    printstr_p(PSTR("*** no PID ***\n"));
-#endif
-
     // bring MPU-6050 out of sleep mode
     // other setup: resolution/accuracy/filters?
     i2c_m_sendByte(MPU_ADD, PWR_MGT_1, 0x08);
@@ -839,6 +852,7 @@ int main(void)
     kalmanResetGuard = 0;
 
     pwm_min = (int) MOTOR_PWM_MIN;
+    runFlag = 0;
 
     // print command line prompt
     printstr_p(PSTR(PROMPT));
@@ -846,17 +860,11 @@ int main(void)
     // loop forever and scan for commands from RPi host
     while ( 1 )
     {
-        // sample go/no-go switch and reflect in flag and LED
-        if ( PINB & STAT_RUN_SW )
-            runFlag = 1;
-        else
-            runFlag = 0;
-        
         // sample battery voltage level and reflect in LED
-        if ( uBattery < BATT_LVL_60 )
-            PORTB |= STAT_TOGG_BATT;
+        if ( uBattery < BATT_LVL_70 )
+            PORTD |= STAT_TOGG_BATT;
         else
-            PORTB &= (~(STAT_TOGG_BATT) | PB_PUP_INIT);
+            PORTD &= (~(STAT_TOGG_BATT) | PB_PUP_INIT);
         
         // sensor error
         if ( nSensorErr < 0 )
