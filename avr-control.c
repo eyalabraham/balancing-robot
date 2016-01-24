@@ -94,17 +94,22 @@
 
 #define     PWR_MGT_1       0x6b
 #define     PWR_MGT_2       0x6c
+#define     SMPRT_DIV       0x19    // sample rate divider = (8KHz / (<div> + 1))
 #define     CONFIG          0x1a    // configuration registers
 #define     GYRO_CONFIG     0x1b
 #define     ACCEL_CONFIG    0x1c
 #define     ACCEL_X         0x3b    // accelerometers
 #define     ACCEL_Y         0x3d
 #define     ACCEL_Z         0x3f
-#define     ACCEL_SCALER    16384.0 // divisor to scale accelerometer reading
 #define     GYRO_X          0x43    // gyro registers
 #define     GYRO_Y          0x45
 #define     GYRO_Z          0x47
-#define     GYRO_SCALER     131.0   // divisor to scale accelerometer reading
+
+#define     ACCEL_SETUP     0x18    // Register 28 – Accelerometer Configuration full scale range ±16g
+#define     GYRO_SETUP      0x18    // Register 27 – Gyroscope Configuration full scale range ±2000 deg/s
+#define     ACCEL_SCALER    2048.0  // divisor to scale accelerometer reading
+#define     GYRO_SCALER     16.4    // divisor to scale gyro reading
+#define     SMPL_RATE_DIV   7       // for 1,000Hz
 #define     UINT2C(v)       ( (v >= 0x8000) ?  -((65535 - v) + 1) : v )  // convert to signed integer
 
 // PID constants default
@@ -113,7 +118,7 @@
 #define     KD              0.0
 #define     MAX_INTEG       100.0
 #define     RESET_INTEG     0.25
-#define     LEAN            0.0     // platform leaning in [deg]
+#define     LEAN           -1.5     // platform leaning in [deg]
 #define     PID_ANGLE_LIM   30.0    // stop running PID outside this angle in [deg]
 
 // PID frequency Timer1 constant (sec 15.9.2 page 126..126)
@@ -668,7 +673,7 @@ ISR(TIMER1_COMPA_vect)
         mpu6050.mpuData[5] = pwm;
 
         pwm = mpu6050.mpuData[10];
-        mpu6050.mpuData[10] = mpu6050.mpuData[9];
+        mpu6050.mpuData[10] = mpu6050.mpuData[11];
         mpu6050.mpuData[11] = pwm;
 
         // scale readings
@@ -678,8 +683,8 @@ ISR(TIMER1_COMPA_vect)
         Gyro_y  = (float) UINT2C(mpu6050.mpuReg.GYRO_YOUT) / (float) GYRO_SCALER;   // gyro rate in [deg/sec]
 
         // rotation calculation (http://www.hobbytronics.co.uk/accelerometer-info)
-        distance = sqrt(Accel_y*Accel_y + Accel_z*Accel_z);
-        pitch = atan2(Accel_x, distance) * (float) 57.2957795;    // convert angle from [rad] to [deg]
+        distance = sqrt(Accel_y*Accel_y + Accel_x*Accel_x);
+        pitch = atan2(Accel_z, distance) * (float) 57.2957795;    // convert angle from [rad] to [deg]
 
         // check if platform is out of control-limits and inhibit PID
         // if it is, then blink 'run' LED and exit PID control loop
@@ -711,6 +716,7 @@ ISR(TIMER1_COMPA_vect)
         }
 
         // Kalman filter
+        Gyro_y = -1 * Gyro_y;               // swap polarity due to gyro orientation
         Ek = kalmanFilter(pitch, Gyro_y, PID_LOOP_TIME);
 
         // Complementary Filer
@@ -835,9 +841,12 @@ int main(void)
     vprintfunc("\n");
 
     // bring MPU-6050 out of sleep mode
-    // other setup: resolution/accuracy/filters?
+    // other setup: resolution/accuracy/filters
     i2c_m_sendByte(MPU_ADD, PWR_MGT_1, 0x08);
     i2c_m_sendByte(MPU_ADD, PWR_MGT_2, 0x00);
+    i2c_m_sendByte(MPU_ADD, SMPRT_DIV, SMPL_RATE_DIV);
+    i2c_m_sendByte(MPU_ADD, ACCEL_CONFIG, ACCEL_SETUP);
+    i2c_m_sendByte(MPU_ADD, GYRO_CONFIG, GYRO_SETUP);
 
     // enable interrupts
     sei();

@@ -1,0 +1,98 @@
+Ideas to fix stability
+=========================================
+
+************************************
+*  alternative atan2() algorithm   *
+************************************
+
+public double aTan2(double y, double x) {
+	double coeff_1 = Math.PI / 4d;
+	double coeff_2 = 3d * coeff_1;
+	double abs_y = Math.abs(y);
+	double angle;
+	if (x >= 0d) {
+		double r = (x - abs_y) / (x + abs_y);
+		angle = coeff_1 - coeff_1 * r;
+	} else {
+		double r = (x + abs_y) / (abs_y - x);
+		angle = coeff_2 - coeff_1 * r;
+	}
+	return y < 0d ? -angle : angle;
+}
+
+this is from here: http://dspguru.com/dsp/tricks/fixed-point-atan2-with-self-normalization
+
+--------------- or ----------------
+
+a := min (|x|, |y|) / max (|x|, |y|)
+s := a * a
+r := ((-0.0464964749 * s + 0.15931422) * s - 0.327622764) * s * a + a
+if |y| > |x| then r := 1.57079637 - r
+if x < 0 then r := 3.14159274 - r
+if y < 0 then r := -r
+
+see more here: http://math.stackexchange.com/questions/1098487/atan2-faster-approximation
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+before
+Program:   11034 bytes (33.7% Full)
+(.text + .data + .bootloader)
+Data:        437 bytes (21.3% Full)
+(.data + .bss + .noinit)
+ISR timing 6.7mSec
+
+after
+Program:   11142 bytes (34.0% Full) -> why?
+(.text + .data + .bootloader)
+Data:        457 bytes (22.3% Full)
+(.data + .bss + .noinit)
+ISR timing 6.2mSec
+*** no benefit, and algorithm does not seem to work, y is always 0 ***
+
+****************************************************
+*  ISR execution time profile and time reduction   *
+****************************************************
+
+restored original atan2() <math.h> library function
+
+ISR timing profile
+                                        section timing
+- IMU measurement       = 4.1mSec           4.1mSec
+- sqrt() and atan2()    = 5.1mSec           1.0mSec
+- Kalman filter         = 6.4mSec           1.3mSec
+- PID and motor         =                   0.3mSec
+- end to end ISR timing = 6.7mSec
+
+try 1
+------------
+remove X axis read and sqrt() calculation with Z axis
+total time              = 5.5mSec
+reduction               = 1.2mSec -> 18%
+
+try 2
+------------
+increase CPU frequency to 8MHz
+increase TWI to 400KHz
+changes to: Tim0 PWM, Tim1 PID/ISR, TWI, UART
+total time              = 2.6mSec
+reduction               = 4.1mSec -> 61%
+
+try 3
+------------
+changed MPU read to a burst read (still at CPU 8MHz and TWI at 400KHz)
+total time              = 1.8mSec
+reduction               = 4.9mSec -> 73%
+
+****************************************************
+*               tuning                             *
+****************************************************
+
+... getting closer...
+PID loop @ 25Hz
+pwmmin  15
+lean    -1.500
+kp      +36.000
+ki      +3.500
+kd      +1.000
+

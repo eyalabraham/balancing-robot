@@ -1,0 +1,73 @@
+
+============================================================================================
+manual GPIO8 toggle (reset line)
+============================================================================================
+
+#
+# using GPIO with RPi
+#
+
+import RPi.GPIO as gpio     # import library
+gpio.VERSION                # show version
+
+gpio.setmode(gpio.BOARD)    # setup references as RPI connector pin numbers
+gpio.setup(24,gpio.OUT)     # set pin-24 as output
+
+gpio.output(24,gpio.LOW)    # set pin to 'lo'
+gpio.output(24,gpio.HIGH)   # set pin to 'hi'
+
+gpio.cleanup()              # cleanup before exiting
+
+
+============================================================================================
+avrdude rel 6.2 for RPi GPIO
+============================================================================================
+
+1) get avrdude source for rel 6.2
+    http://download.savannah.gnu.org/releases/avrdude/avrdude-6.2.tar.gz
+2) get any necessary patches as required (none were required here, 6.2 has native support)
+   apply the patches
+    patch -p0 -i <patch-name>.patch
+3) unzip tar file
+    avrdude-6.2
+4) may need to install specific version of automake
+    sudo apt-get install automake1.10
+5) may need to install 'byacc' and 'flex' packages with apt-get install <pack>
+6) see INSTALL file for instructions on: ./configure, make, make install
+    use '--enable-linuxgpio=yes' with configure to enable linuxgpio sysfs support
+
+
+============================================================================================
+Create a configuration file avrdude.rpi.conf with the text below
+============================================================================================
+# This programmer bitbangs GPIO lines using the Linux sysfs GPIO interface
+#
+# To enable it set the configuration below to match the GPIO lines connected to the
+# relevant ISP header pins and uncomment the entry definition. In case you don't
+# have the required permissions to edit this system wide config file put the
+# entry in a separate <your name>.conf file and use it with -C+<your name>.conf
+# on the command line.
+#
+# To check if your avrdude build has support for the linuxgpio programmer compiled in,
+# use -c?type on the command line and look for linuxgpio in the list. If it's not available
+# you need pass the --enable-linuxgpio=yes option to configure and recompile avrdude.
+#
+# Use GPIO# for pin numbers and not connector pin numbers
+#
+programmer
+  id    = "linuxgpio";
+  desc  = "Use the Linux sysfs interface to bitbang GPIO lines";
+  type  = "linuxgpio";
+  reset = ~ 8;
+  sck   = 11;
+  mosi  = 10;
+  miso  = 9;  
+;
+
+
+============================================================================================
+execute AVRDUDE
+============================================================================================
+sudo avrdude -pm328p -clinuxgpio -C+avrdude.rpi.conf -Uflash:w:<avr-prog-file>.hex:a
+
+
