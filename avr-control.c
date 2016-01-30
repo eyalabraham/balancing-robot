@@ -105,10 +105,11 @@
 #define     GYRO_Y          0x45
 #define     GYRO_Z          0x47
 
-#define     ACCEL_SETUP     0x18    // Register 28 – Accelerometer Configuration full scale range ±16g
-#define     GYRO_SETUP      0x18    // Register 27 – Gyroscope Configuration full scale range ±2000 deg/s
-#define     ACCEL_SCALER    2048.0  // divisor to scale accelerometer reading
-#define     GYRO_SCALER     16.4    // divisor to scale gyro reading
+#define     DLPF_CFG        3       // Register 26 - Digital Low Pass Filter configuration
+#define     ACCEL_SETUP     0x08    // Register 28 – Accelerometer Configuration full scale range ±4g
+#define     GYRO_SETUP      0x08    // Register 27 – Gyroscope Configuration full scale range ±500 deg/s
+#define     ACCEL_SCALER    8192.0  // divisor to scale accelerometer reading
+#define     GYRO_SCALER     65.5    // divisor to scale gyro reading
 #define     SMPL_RATE_DIV   7       // for 1,000Hz
 #define     UINT2C(v)       ( (v >= 0x8000) ?  -((65535 - v) + 1) : v )  // convert to signed integer
 
@@ -122,7 +123,7 @@
 #define     PID_ANGLE_LIM   30.0    // stop running PID outside this angle in [deg]
 
 // PID frequency Timer1 constant (sec 15.9.2 page 126..126)
-#define     PID_FREQ        25      // <------PID frequency in Hz
+#define     PID_FREQ        50      // <------PID frequency in Hz
 #define     TIM1_FREQ_CONST ((PRE_SCALER / PID_FREQ) -1)
 #define     PRE_SCALER      7812    // 8MHz clock divided by 1024 pre scaler
 #define     LED_BLINK_RATE  2       // LED blink rate in Hz
@@ -192,7 +193,10 @@
   set lean <lean>              - set frame leaning\n\
   set pwmmin <pwm_min>         - set min. pwm value\n\
   set run <1|0>                - set run flag to 1=go, 0=stop\n\
-  set alpha <a>                - set filter alpha\n"
+  set alpha <a>                - set filter alpha\n\n\
+  set dlpf <dlpf>              - set MPU DLPF\n\
+  set accl <accl>              - set MPU Accel\n\
+  set gyro <gyro>              - set MPU Gyro\n"
 
 /****************************************************************************
   special function prototypes
@@ -231,6 +235,8 @@ float Accel_y;                  // accelerometer Y, TIMER1 ISR global variable
 float Accel_z;                  // accelerometer Z, TIMER1 ISR global variable
 float Gyro_x;                   // gyroscope X, TIMER1 ISR global variable
 float Gyro_y;                   // gyroscope X, TIMER1 ISR global variable
+float Accel_scale;              // accelerometer scaler
+float Gyro_scale;               // gyro scaler
 
 float alpha = (float) ALPHA;    // complementary filter constant
 
@@ -239,6 +245,7 @@ float Ek;
 float SEk  = 0.0;
 float DEk  = 0.0;
 float Ek_1 = 0.0;
+float Ek_2 = 0.0;
 float Uk;
 
 volatile    float Kp, Ki, Kd;   // PID factors
@@ -520,6 +527,69 @@ int process_cli(char *commandLine)
             else
                 pwm_min = i;
         }
+        // set MPU DLPF
+        else if ( strcmp(tokens[1], "dlpf") == 0 )
+        {
+            i = atof(tokens[2]);
+            if ( i < 0 || i > 6 )
+                return -1;
+            else
+            {
+                i2c_m_sendByte(MPU_ADD, CONFIG, (uint8_t) i);
+            }
+        }
+        // set MPU Accelerometer
+        else if ( strcmp(tokens[1], "accl") == 0 )
+        {
+            i = atof(tokens[2]);
+            switch ( i )
+            {
+            case 0:
+                i2c_m_sendByte(MPU_ADD, ACCEL_CONFIG, 0x00);
+                Accel_scale = (float) 16384.0;
+                break;
+            case 1:
+                i2c_m_sendByte(MPU_ADD, ACCEL_CONFIG, 0x08);
+                Accel_scale = (float) 8192.0;
+                break;
+            case 2:
+                i2c_m_sendByte(MPU_ADD, ACCEL_CONFIG, 0x10);
+                Accel_scale = (float) 4096.0;
+                break;
+            case 3:
+                i2c_m_sendByte(MPU_ADD, ACCEL_CONFIG, 0x18);
+                Accel_scale = (float) 2048.0;
+                break;
+            default:
+                return -1;
+            }
+        }
+        // set MPU Gyro
+        else if ( strcmp(tokens[1], "gyro") == 0 )
+        {
+            i = atof(tokens[2]);
+            switch ( i )
+            {
+            case 0:
+                i2c_m_sendByte(MPU_ADD, GYRO_CONFIG, 0x00);
+                Gyro_scale = (float) 131.0;
+                break;
+            case 1:
+                i2c_m_sendByte(MPU_ADD, GYRO_CONFIG, 0x08);
+                Gyro_scale = (float) 65.5;
+                break;
+            case 2:
+                i2c_m_sendByte(MPU_ADD, GYRO_CONFIG, 0x10);
+                Gyro_scale = (float) 32.8;
+                break;
+            case 3:
+                i2c_m_sendByte(MPU_ADD, GYRO_CONFIG, 0x18);
+                Gyro_scale = (float) 16.4;
+                break;
+            default:
+                return -1;
+            }
+        }
         else
             return -1;
     }
@@ -677,10 +747,10 @@ ISR(TIMER1_COMPA_vect)
         mpu6050.mpuData[11] = pwm;
 
         // scale readings
-        Accel_x = (float) UINT2C(mpu6050.mpuReg.ACCEL_XOUT) / (float) ACCEL_SCALER;
-        Accel_y = (float) UINT2C(mpu6050.mpuReg.ACCEL_YOUT) / (float) ACCEL_SCALER;
-        Accel_z = (float) UINT2C(mpu6050.mpuReg.ACCEL_ZOUT) / (float) ACCEL_SCALER;
-        Gyro_y  = (float) UINT2C(mpu6050.mpuReg.GYRO_YOUT) / (float) GYRO_SCALER;   // gyro rate in [deg/sec]
+        Accel_x = (float) UINT2C(mpu6050.mpuReg.ACCEL_XOUT) / (float) Accel_scale;
+        Accel_y = (float) UINT2C(mpu6050.mpuReg.ACCEL_YOUT) / (float) Accel_scale;
+        Accel_z = (float) UINT2C(mpu6050.mpuReg.ACCEL_ZOUT) / (float) Accel_scale;
+        Gyro_y  = (float) UINT2C(mpu6050.mpuReg.GYRO_YOUT) / (float) Gyro_scale;   // gyro rate in [deg/sec]
 
         // rotation calculation (http://www.hobbytronics.co.uk/accelerometer-info)
         distance = sqrt(Accel_y*Accel_y + Accel_x*Accel_x);
@@ -713,6 +783,7 @@ ISR(TIMER1_COMPA_vect)
             SEk  = 0.0;
             DEk  = 0.0;
             Ek_1 = pitch;
+            Ek_2 = pitch;
         }
 
         // Kalman filter
@@ -726,8 +797,9 @@ ISR(TIMER1_COMPA_vect)
         // PID calculation
         // source: https://en.wikipedia.org/wiki/PID_controller#Discrete_implementation
         Ek  += lean;                        // offset for frame leaning
-        SEk += Ek;                          // sum of error for integral part
-        DEk  = (Ek - Ek_1);                 // difference of errors for differential part
+        SEk += Ek * PID_LOOP_TIME;          // sum of error for integral part
+        DEk  = (Ek - Ek_2) / ( 2 * PID_LOOP_TIME); // difference of errors for differential part
+        Ek_2 = Ek_1;
         Ek_1 = Ek;
 
         if ( SEk > MAX_INTEG )              // prevent integrator wind-up
@@ -739,7 +811,13 @@ ISR(TIMER1_COMPA_vect)
         Uk   = Kp*Ek + Ki*SEk + Kd*DEk;     // calculate PID
 
         // setup motor turn direction
-        motor_power = round(Uk);            // convert to integer
+        if ( Uk > 255.0 )                   // convert to integer
+            motor_power = 255;
+        else if ( Uk < -255.0 )
+            motor_power = -255;
+        else
+            motor_power = round(Uk);
+
         if ( motor_power < 0 )
             motor_dir = MOTOR_REV_RIGHT + MOTOR_REV_LEFT;
         else if ( motor_power > 0 )
@@ -767,6 +845,10 @@ ISR(TIMER1_COMPA_vect)
         PORTB ^= LOOP_TEST_POINT;
 
 #ifdef __DEBUG_PRINT__                      // if tracing is on then output some data
+        printfloat(pitch);
+        vprintfunc(",");
+        printfloat(Gyro_y);
+        vprintfunc(",");
         printfloat(Ek);                     // print angle value (PV = Process Variable)
         vprintfunc(",");
         printfloat(Uk);                     // print control value (OP = Output)
@@ -845,8 +927,11 @@ int main(void)
     i2c_m_sendByte(MPU_ADD, PWR_MGT_1, 0x08);
     i2c_m_sendByte(MPU_ADD, PWR_MGT_2, 0x00);
     i2c_m_sendByte(MPU_ADD, SMPRT_DIV, SMPL_RATE_DIV);
+    i2c_m_sendByte(MPU_ADD, CONFIG, DLPF_CFG);
     i2c_m_sendByte(MPU_ADD, ACCEL_CONFIG, ACCEL_SETUP);
     i2c_m_sendByte(MPU_ADD, GYRO_CONFIG, GYRO_SETUP);
+    Accel_scale = (float) ACCEL_SCALER;
+    Gyro_scale = (float) GYRO_SCALER;
 
     // enable interrupts
     sei();

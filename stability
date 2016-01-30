@@ -85,14 +85,22 @@ total time              = 1.8mSec
 reduction               = 4.9mSec -> 73%
 
 ****************************************************
+*           MPU-6050 configuration                 *
+****************************************************
+
+default configuration for MPU:
+    reduce sample rate to 1KHz -> reduced overall noise from samples
+    use DLPF at 44Hz cutoff frequency -> reduced noise and eliminated "jumps"
+    added code to enable run-time change of DLPF and sensor full-scale range and sensitivity
+
+****************************************************
 *               tuning                             *
 ****************************************************
 
-... getting closer...
-PID loop @ 25Hz
-pwmmin  15
-lean    -1.500
-kp      +36.000
-ki      +3.500
-kd      +1.000
+stable balance on carpet:
+PID loop @ 50Hz
+lean    +0.75
+kp      +70.0
+ki      +5.0
+kd      +0.04
 

@@ -1,62 +1,67 @@
  avr-control.c
 
- this program is the control program for a 2-wheel balancing robot.
- the robot is managed by a RaspberryPi connected to an ATmega328P,
- which runs this code.
- the AVR performs 2 tasks:
- AVR: (1) read MPU-6050 sensor
-      (2) compute PID, and control motors
-      (3) process commands coming from RPi
-
- RPi: send commands to AVR for changing PID constants and getting status
-
-                               +-----------+
-                  +--< I2C >---+ MPU-6050A |
- +-----+          |  +-----+   +-----------+
- |     |          |  |     |
- | RPi |          +--+ AVR |
- |     +--< UART >---+     |
- +-----+             +--+--+
-                        |
-              2x PWM channels to Servo
-
- ATmega AVR IO
- ---------------
- right motor PWM          OC0A        pin 12      out
- right motor direction    PB0..PB1    pin 14..15  out
- left motor PWM           OC0B        pin 11      out
- left motor direction     PB2..PB3    pin 16..16  out
- go/no-go select          PB4         pin 18      in
- Batt low/ok              PB5         pin 19      out
- run/not-run              PB6         pin 9       out
- TWI                      SCL         pin 28      out
- TWI                      SDA         pin 27      in/out
- Batt sense               ADC0        pin 23      analog in
-
- Port B bit assignment
-
- b7 b6 b5 b4 b3 b2 b1 b0
- |  |  |  |  |  |  |  |
- |  |  |  |  |  |  |  +--- 'o' right motor dir \ 0, 3=stop, 1=fwd, 2=rev
- |  |  |  |  |  |  +------ 'o' right motor dir /
- |  |  |  |  |  +--------- 'o' left motor dir  \ 0, 3=stop, 1=fwd, 2=rev
- |  |  |  |  +------------ 'o' left motor dir  /
- |  |  |  +--------------- 'i' go/no-go          PUP enabled, 0=no-go, 1=go
- |  |  +------------------ 'o' batt. ok/low      0=batt.ok,1=batt.low (red LED)
- |  +--------------------- 'o' run/not-run       0=not running,1=running (green LED)
- +------------------------ 'o' cycle test point
-
- note: all references to data sheet are for ATmega 328P Rev. 8161D–AVR–10/09
-
- Command line list:
- 
-   help                         - print help text
-   get <kp> | <ki> | <kd>       - print one of the PID constants as: fixed-point, float
-   get lean                     - print frame leaning value as: fixed-point, float
-   get batt                     - print battery voltage in float
-   get run                      - print go/no-go switch state: 1 or 0
-   set prompt <on> | <off>      - set prompt state in 'nDoPrompt'
-   set [<kp> | <ki> | <kd>] <n> - set one of the PID constants with fixed-point number (format Q10.5)
-   set lean <lean>              - set frame leaning level with fixed-point number (format Q10.5)
-   set pwmmin <pwm_min>         - set min. pwm value
+ * this program is the control program for a 2-wheel balancing robot.
+ * the robot is managed by a RaspberryPi connected to an ATmega328P,
+ * which runs this code.
+ * the AVR performs 2 tasks:
+ * AVR: (1) read MPU-6050 sensor
+ *      (2) compute PID, and control motors
+ *      (3) process commands coming from RPi
+ *
+ * RPi: send commands to AVR for changing PID constants and getting status
+ *
+ *                               +-----------+
+ *                  +--< I2C >---+ MPU-6050A |
+ * +-----+          |  +-----+   +-----------+
+ * |     |          |  |     |
+ * | RPi |          +--+ AVR |
+ * |     +--< UART >---+     |
+ * +-----+             +--+--+
+ *                        |
+ *              2x PWM channels to Servo
+ *
+ * ATmega AVR IO
+ * ---------------
+ * right motor PWM          OC0A        pin 12      out
+ * left motor PWM           OC0B        pin 11      out
+ * right motor direction    PB0..PB1    pin 14..15  out
+ * PID timing               PB2         pin 16
+ * left motor direction     PB6..PB7    pin 9..10   out
+ *
+ * Batt low/ok              PD2         pin 4       out
+ * run/not-run              PD3         pin 5       out
+ *
+ * TWI                      SCL         pin 28      out
+ * TWI                      SDA         pin 27      in/out
+ * Batt sense               ADC0        pin 23      analog in
+ *
+ * Port B bit assignment
+ *
+ * b7 b6 b5 b4 b3 b2 b1 b0
+ * |  |  |  |  |  |  |  |
+ * |  |  |  |  |  |  |  +--- 'o' right motor dir \ 0, 3=stop, 1=fwd, 2=rev
+ * |  |  |  |  |  |  +------ 'o' right motor dir /
+ * |  |  |  |  |  +--------- 'o' PID cycle test point
+ * |  |  |  |  +------------ \
+ * |  |  |  +---------------  | in circuit serial programmer
+ * |  |  +------------------ /
+ * |  +--------------------- 'o' left motor dir  \ 0, 3=stop, 1=fwd, 2=rev
+ * +------------------------ 'o' left motor dir  /
+ *
+ * Port D bit assignment
+ *
+ * b7 b6 b5 b4 b3 b2 b1 b0
+ * |  |  |  |  |  |  |  |
+ * |  |  |  |  |  |  |  +--- UART Rx
+ * |  |  |  |  |  |  +------ UART Tx
+ * |  |  |  |  |  +--------- 'o' batt. ok/low      0=batt.ok,1=batt.low (red LED)
+ * |  |  |  |  +------------ 'o' run/not-run       0=not running,1=running (red LED)
+ * |  |  |  +--------------- -
+ * |  |  +------------------ '0' OC0A right PWM
+ * |  +--------------------- '0' OC0B left PWM
+ * +------------------------ -
+ *
+ * note: all references to data sheet are for ATmega 328P Rev. 8161D–AVR–10/09
+ *
+ * Command line list see source or type 'help'<CR>
 
