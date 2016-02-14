@@ -54,12 +54,12 @@
  * |  |  |  |  |  |  |  |
  * |  |  |  |  |  |  |  +--- UART Rx
  * |  |  |  |  |  |  +------ UART Tx
- * |  |  |  |  |  +--------- 'o' batt. ok/low      0=batt.ok,1=batt.low (red LED)
- * |  |  |  |  +------------ 'o' run/not-run       0=not running,1=running (red LED)
- * |  |  |  +--------------- -
- * |  |  +------------------ '0' OC0A right PWM
- * |  +--------------------- '0' OC0B left PWM
- * +------------------------ -
+ * |  |  |  |  |  +--------- 'i' Right wheel Hall Effect sensor (INT0)
+ * |  |  |  |  +------------ 'i' Left wheel Hall Effect sensor (INT1)
+ * |  |  |  +--------------- 'o' batt. ok/low      0=batt.ok,1=batt.low (red LED)
+ * |  |  +------------------ 'o' OC0A right PWM
+ * |  +--------------------- 'o' OC0B left PWM
+ * +------------------------ 'o' run/not-run       0=not running,1=running (red LED)
  *
  * note: all references to data sheet are for ATmega 328P Rev. 8161D–AVR–10/09
  *
@@ -105,7 +105,7 @@
 #define     GYRO_Y          0x45
 #define     GYRO_Z          0x47
 
-#define     DLPF_CFG        3       // Register 26 - Digital Low Pass Filter configuration
+#define     DLPF_CFG        6       // Register 26 - Digital Low Pass Filter configuration
 #define     ACCEL_SETUP     0x08    // Register 28 – Accelerometer Configuration full scale range ±4g
 #define     GYRO_SETUP      0x08    // Register 27 – Gyroscope Configuration full scale range ±500 deg/s
 #define     ACCEL_SCALER    8192.0  // divisor to scale accelerometer reading
@@ -117,31 +117,43 @@
 #define     KP              0.0     // PID constants
 #define     KI              0.0
 #define     KD              0.0
-#define     MAX_INTEG       100.0
-#define     RESET_INTEG     0.25
-#define     LEAN           -1.5     // platform leaning in [deg]
+#define     MAX_INTEG_AN    100.0
+#define     LEAN           +1.05    // offset for MPU-6050 mounting and frame alignment in [deg]
 #define     PID_ANGLE_LIM   30.0    // stop running PID outside this angle in [deg]
 
-// PID frequency Timer1 constant (sec 15.9.2 page 126..126)
+// ballancing PID frequency Timer1 constant (sec 15.9.2 page 126..126)
 #define     PID_FREQ        50      // <------PID frequency in Hz
 #define     TIM1_FREQ_CONST ((PRE_SCALER / PID_FREQ) -1)
 #define     PRE_SCALER      7812    // 8MHz clock divided by 1024 pre scaler
 #define     LED_BLINK_RATE  2       // LED blink rate in Hz
 
+// wheel position PID
+#define     PID_FRQ_WH      5       // wheel position/speed PID at 5Hz
+#define     CP              0.0
+#define     CI              0.0
+#define     CD              0.0
+#define     MAX_INTEG_MT    100.0
+
 // complementary filter constant
 #define     ALPHA           0.98
 
 // kalman filter definitions
-#define     PID_LOOP_TIME   ((float)(1/(float)PID_FREQ))
+#define     PID_LOOP_TIME   ((float)(1.0/(float)PID_FREQ))
 
 // IO ports B and D initialization
 #define     PB_DDR_INIT     0xc7    // port data direction
 #define     PB_PUP_INIT     0x00    // port input pin pull-up
 #define     PB_INIT         0x00    // port initial values
 
-#define     PD_DDR_INIT     0x6e    // enable PD5 & 6 as outputs for OCRx PWM, PD2 & 3 for LED signals
+#define     PD_DDR_INIT     0xf2    // enable PD4,5,6 and 7 as outputs for OCRx PWM, and LED signals
 #define     PD_PUP_INIT     0x00    // port input pin pull-up
 #define     PD_INIT         0x00    // port initial values
+
+// interrupts INT0 and INT1 setup
+#define     INTSETUP        0x0a    // trigger interrupt on falling edge
+#define     INTMASK         0x03    // enable INT0 and INT1
+#define     EXTINTENA       INTMASK // enable INT0 and INT1 'or' mask
+#define     EXTINTDIS       0xfc    // disable INT0 INT1 'and' mask
 
 // motor direction/state bit masks
 #define     MOTOR_CLR_RIGHT 0xfc    // clear right motor direction bits (AND mask)
@@ -155,8 +167,8 @@
 #define     MOTOR_PWM_MAX   255
 
 // misc masks
-#define     STAT_TOGG_BATT  0x04    // toggle battery status (XOR mask)
-#define     STAT_RUN        0x08    // toggle running status (XOR mask)
+#define     STAT_TOGG_BATT  0x10    // toggle battery status (XOR mask)
+#define     STAT_RUN        0x80    // toggle running status (XOR mask)
 #define     LOOP_TEST_POINT 0x04    // toggle PID loop timing test point
 
 // battery voltage macros
@@ -182,21 +194,22 @@
 #define     SYNTAX_ERR      "syntax error.\n"
 #define     HELP_TEXT       "\n\
   help                         - help text\n\
-  get <kp> | <ki> | <kd>       - PID constants\n\
+  get <kp> | <ki> | <kd>       - balance PID constants\n\
+  get <cp> | <ci> | <cd>       - position PID constants\n\
   get lean                     - frame leaning\n\
   get batt                     - battery voltage\n\
-  get run                      - go/no-go switch\n\
+  get run                      - go/no-go state\n\
   get pwmmin                   - show pwm min value\n\
   get alpha                    - print comp. filter alpha\n\
   set prompt <on> | <off>      - set prompt\n\
-  set [<kp> | <ki> | <kd>] <n> - set PID constants\n\
+  set [<kp> | <ki> | <kd>] <n> - set balance PID constants\n\
+  set [<cp> | <ci> | <cd>] <n> - set position PID constants\n\
   set lean <lean>              - set frame leaning\n\
-  set pwmmin <pwm_min>         - set min. pwm value\n\
   set run <1|0>                - set run flag to 1=go, 0=stop\n\
-  set alpha <a>                - set filter alpha\n\n\
-  set dlpf <dlpf>              - set MPU DLPF\n\
-  set accl <accl>              - set MPU Accel\n\
-  set gyro <gyro>              - set MPU Gyro\n"
+  set alpha <a>                - set filter alpha\n\
+  set dlpf <0..6>              - set MPU DLPF (=6)\n\
+  set accl <0..3>              - set MPU Accel (=1)\n\
+  set gyro <0..3>              - set MPU Gyro (=1)\n"
 
 /****************************************************************************
   special function prototypes
@@ -207,11 +220,15 @@ void reset(void) __attribute__((naked)) __attribute__((section(".init3")));
 /****************************************************************************
   Globals
 ****************************************************************************/
-volatile    uint8_t uBattery = 0;   // battery voltage read from ADC
-volatile    int     nSensorErr = 0; // MPU-6050 read error
-uint8_t     runFlag = 0;            // run flag reflecting the go/no-go switch state
-int         nDoPrompt = 1;          // print prompt
-int         blink;                  // LED blink rate
+volatile    uint16_t timerTicks = 0;    // clock timer ticks, increment at PID_FREQ [Hz]
+volatile    int     nLeftClicks = 0;    // left wheel clicks
+volatile    int     nRightClicks = 0;   // right wheel clicks
+volatile    int     nRightDir = 0;      // motor turn direction (1 = Fwd, -1 = Back, 0 = stop)
+volatile    int     nLeftDir = 0;
+volatile    uint8_t uBattery = 0;       // battery voltage read from ADC
+volatile    int     nSensorErr = 0;     // MPU-6050 read error
+volatile    uint8_t runFlag = 0;        // run flag reflecting the go/no-go switch state
+int         nDoPrompt = 1;              // print prompt
 
 // union to allow register burst read
 #define     MPU_REGS        sizeof(struct mpuReg_t)  // MPU register data buffer size in bytes
@@ -240,20 +257,14 @@ float Gyro_scale;               // gyro scaler
 
 float alpha = (float) ALPHA;    // complementary filter constant
 
-// PID formula variable
-float Ek;
-float SEk  = 0.0;
-float DEk  = 0.0;
-float Ek_1 = 0.0;
-float Ek_2 = 0.0;
-float Uk;
-
-volatile    float Kp, Ki, Kd;   // PID factors
+// angle PID formula variable
+volatile    float Kp, Ki, Kd;   // angle PID factors
 volatile    float lean;         // platform lean constant
-volatile    int   pwm_min;
+
+// wheel position PID formula variable
+volatile    float Cp, Ci, Cd;   // wheel position PID factors
 
 // Kalman filter variable
-int   kalmanResetGuard = 0;     // Kalman filter reset guard
 float Q_angle = 0.001;          // Process noise variance for the accelerometer
 float Q_gyro  = 0.003;          // Process noise variance for the gyro bias
 float R_angle = 0.03;           // Measurement noise variance - this is the variance of the measurement noise
@@ -313,6 +324,12 @@ void ioinit(void)
     ADCSRA = 0xEF;  // enable auto-triggered conversion and interrupts, ADC clock 62.5KHz @ 8MKz system clock
     ADCSRB = 0x00;  // auto trigger source is free-running
 
+    // initialize external interrupt pins INT0 and INT1
+    // INT0 and INT1 will trigger when Hall effect sensors detect wheel magnets
+    // interrupt routines will function as wheel click counters/encoders
+    EICRA  = INTSETUP;  // falling edge trigger
+    EIMSK  = INTMASK;   // enable interrupts
+
     // initialize general IO PB and PD pins for output
     // - PB0, PB1: output, no pull-up, right and left motor fwd/rev control
     // -
@@ -340,31 +357,6 @@ void reset(void)
     MCUSR = 0; // clear reset flags
     wdt_disable();
 }
-
-/* ----------------------------------------------------------------------------
- * read_mpu_2c()
- *
- * read 2's complement accelerometer data
- *
- */
-/*
-int read_mpu_2c(uint8_t address, uint8_t command)
-{
-    static uint8_t     high;
-    static uint8_t     low;
-    static uint16_t    value;
-
-    i2c_m_getByte(address, command, &high);     // read bytes
-    i2c_m_getByte(address, command+1, &low);
-
-    value = (high << 8) + low;                  // make into word
-
-    if ( value >= 0x8000 )                      // convert to signed integer
-        return -((65535 - value) + 1);
-    else
-        return value;
-}
-*/
 
 /* ----------------------------------------------------------------------------
  * printstr()
@@ -491,7 +483,7 @@ int process_cli(char *commandLine)
         {
             lean = atof(tokens[2]);
         }
-        // set [<kp> | <ki> | <kd>] <num>   - set one of the PID constants with fixed-point number (format Q10.5)
+        // set [<kp> | <ki> | <kd> | <cp> | <ci> | <cd>] <num>   - set one of the PID constants with fixed-point number (format Q10.5)
         else if ( strcmp(tokens[1], "kp") == 0 )
         {
             Kp = atof(tokens[2]);
@@ -504,6 +496,18 @@ int process_cli(char *commandLine)
         {
             Kd = atof(tokens[2]);
         }
+        else if ( strcmp(tokens[1], "cp") == 0 )
+        {
+            Cp = atof(tokens[2]);
+        }
+        else if ( strcmp(tokens[1], "ci") == 0 )
+        {
+            Ci = atof(tokens[2]);
+        }
+        else if ( strcmp(tokens[1], "cd") == 0 )
+        {
+            Cd = atof(tokens[2]);
+        }
         // set Complementary alpha
         else if ( strcmp(tokens[1], "alpha") == 0 )
         {
@@ -515,17 +519,6 @@ int process_cli(char *commandLine)
             runFlag = atoi(tokens[2]);
             if ( runFlag > 1 || runFlag < 0 )   // fix flag to be '0' or '1'
                 runFlag = 1;
-        }
-        // set pwmmin <pwm_min>         - set min. pwm value
-        else if ( strcmp(tokens[1], "pwmmin") == 0 )
-        {
-            i = atoi(tokens[2]);
-
-            // if out of range, then reset and return syntax error
-            if ( i > MOTOR_PWM_MAX || i < 0 )
-                return -1;
-            else
-                pwm_min = i;
         }
         // set MPU DLPF
         else if ( strcmp(tokens[1], "dlpf") == 0 )
@@ -595,7 +588,7 @@ int process_cli(char *commandLine)
     }
     else if ( strcmp(tokens[0], "get") == 0 && numTokens == 2 )
     {
-        // get <kp> | <ki> | <kd>   - print one of the PID constants as: fixed-point, float
+        // get <kp> | <ki> | <kd> | <cp> | <ci> | <cd>  - print one of the PID constants as: fixed-point, float
         if ( strcmp(tokens[1], "kp") == 0 )
         {
             printfloat(Kp);
@@ -605,11 +598,25 @@ int process_cli(char *commandLine)
         {
             printfloat(Ki);
             vprintfunc("\n");
-
         }
         else if ( strcmp(tokens[1], "kd") == 0 )
         {
             printfloat(Kd);
+            vprintfunc("\n");
+        }
+        else if ( strcmp(tokens[1], "cp") == 0 )
+        {
+            printfloat(Cp);
+            vprintfunc("\n");
+        }
+        else if ( strcmp(tokens[1], "ci") == 0 )
+        {
+            printfloat(Ci);
+            vprintfunc("\n");
+        }
+        else if ( strcmp(tokens[1], "cd") == 0 )
+        {
+            printfloat(Cd);
             vprintfunc("\n");
         }
         // get lean                 - print frame leaning value as: fixed-point, float
@@ -635,11 +642,6 @@ int process_cli(char *commandLine)
         else if ( strcmp(tokens[1], "run") == 0 )
         {
             vprintfunc("%d\n", (runFlag ? 1 : 0));
-        }
-        // get pwmmin                   - show pwm min value
-        else if ( strcmp(tokens[1], "pwmmin") == 0 )
-        {
-            vprintfunc("%d\n", pwm_min);
         }
         else
             return -1;
@@ -668,10 +670,14 @@ float kalmanFilter(float newAngle, float newRate, float looptime)
 
     angle += looptime * (newRate - bias);
 
-    P_00  += looptime * (looptime * P_11 - P_01 - P_10 + Q_angle);
-    P_01  -= looptime * P_11;
-    P_10  -= looptime * P_11;
-    P_11  += Q_gyro * looptime;
+    // the following four equations for P matrix are from: http://forum.arduino.cc/index.php/topic,8652.html
+    // slight difference in P_00
+    // the change eliminated what looked like an accumulating bias in the angle and a run-off robot
+    // the robot system can be stabilized now!
+    P_00 += looptime * (Q_angle - P_10 - P_01);
+    P_01 -= looptime * P_11;
+    P_10 -= looptime * P_11;
+    P_11 += looptime * Q_angle;
 
     y = newAngle - angle;
     S = P_00 + R_angle;
@@ -690,37 +696,40 @@ float kalmanFilter(float newAngle, float newRate, float looptime)
 }
 
 /* ----------------------------------------------------------------------------
- * resetKalmanFilter()
- *
- *  reset Kalman filter parameters
- *  source: http://www.x-firm.com/?page_id=148
- *
- */
-void resetKalmanFilter(float angleInit)
-{
-    angle   = angleInit;
-    bias    = 0.0;
-    P_00    = 0.0;
-    P_01    = 0.0;
-    P_10    = 0.0;
-    P_11    = 0.0;
-}
-
-/* ----------------------------------------------------------------------------
  * This ISR will trigger when Timer 1 compare indicates the time interval
  * for running the PID tasks:
  * - read tilt/gyro
  * - compute PID
  * - set motor PWMs
  *
- * measured execution time. approximately 1.8mSec
+ * measured execution time. approximately 2.0mSec
  *
  */
 ISR(TIMER1_COMPA_vect)
 {
-    static uint8_t pwm, motor_dir, port_b;
-    static int     motor_power, mp;
+    // ** defining all static so that the local variables will not be automatic (stack based)
+    // angle PID formula variable
+    static float ang_Ek;
+    static float ang_SEk  = 0.0;
+    static float ang_DEk  = 0.0;
+    static float ang_Ek_1 = 0.0;
+    static float ang_Ek_2 = 0.0;
+    static float ang_Uk   = 0.0;
+
+    // wheel position PID formula variable
+    static float pos_Ek;
+    static float pos_SEk  = 0.0;
+    static float pos_DEk  = 0.0;
+    static float pos_Ek_1 = 0.0;
+    static float pos_Uk   = 0.0;
+
+    // general PID variables
+    static float Uk;
+    static uint8_t pwmRight, pwmLeft, motor_dir, port_b, tmp;
+    static int     motor_power, blink, wheel_pid;
     static float   distance, pitch;
+
+    timerTicks++;   // increment main timer
 
     if ( runFlag )
     {
@@ -730,21 +739,21 @@ ISR(TIMER1_COMPA_vect)
         // burst read accelerometer and gyro
         nSensorErr = i2c_m_burstRead(MPU_ADD, ACCEL_X, MPU_REGS, mpu6050.mpuData);
 
-        pwm = mpu6050.mpuData[0];   // convert to little endian
+        tmp = mpu6050.mpuData[0];   // swap bytes to convert to little endian
         mpu6050.mpuData[0] = mpu6050.mpuData[1];
-        mpu6050.mpuData[1] = pwm;
+        mpu6050.mpuData[1] = tmp;
 
-        pwm = mpu6050.mpuData[2];
+        tmp = mpu6050.mpuData[2];
         mpu6050.mpuData[2] = mpu6050.mpuData[3];
-        mpu6050.mpuData[3] = pwm;
+        mpu6050.mpuData[3] = tmp;
 
-        pwm = mpu6050.mpuData[4];
+        tmp = mpu6050.mpuData[4];
         mpu6050.mpuData[4] = mpu6050.mpuData[5];
-        mpu6050.mpuData[5] = pwm;
+        mpu6050.mpuData[5] = tmp;
 
-        pwm = mpu6050.mpuData[10];
+        tmp = mpu6050.mpuData[10];
         mpu6050.mpuData[10] = mpu6050.mpuData[11];
-        mpu6050.mpuData[11] = pwm;
+        mpu6050.mpuData[11] = tmp;
 
         // scale readings
         Accel_x = (float) UINT2C(mpu6050.mpuReg.ACCEL_XOUT) / (float) Accel_scale;
@@ -754,63 +763,73 @@ ISR(TIMER1_COMPA_vect)
 
         // rotation calculation (http://www.hobbytronics.co.uk/accelerometer-info)
         distance = sqrt(Accel_y*Accel_y + Accel_x*Accel_x);
-        pitch = atan2(Accel_z, distance) * (float) 57.2957795;    // convert angle from [rad] to [deg]
+        pitch = atan(Accel_z / distance) * (float) 57.2957795;  // convert angle from [rad] to [deg]
 
         // check if platform is out of control-limits and inhibit PID
         // if it is, then blink 'run' LED and exit PID control loop
         if ( abs(pitch) > PID_ANGLE_LIM )
         {
             blink++;
-            if ( blink > (PID_FREQ / LED_BLINK_RATE) )
+            if ( blink >= (PID_FREQ / LED_BLINK_RATE) )
             {
-                PORTD ^= STAT_RUN;          // toggle 'run' LED
+                PORTD ^= STAT_RUN;      // toggle 'run' LED
                 blink = 0;
             }
-            PORTB &= MOTOR_CLR_DIR;         // stop motors
-            PORTB ^= LOOP_TEST_POINT;       // toggle cycle-test signal
-            kalmanResetGuard = 0;           // reset once when existing PID inhibit state
+            PORTB &= MOTOR_CLR_DIR;     // stop motors
+            PORTB ^= LOOP_TEST_POINT;   // toggle cycle-test signal
             return;
         }
         else
         {
-            PORTD |= STAT_RUN;              // turn on 'run' LED
-            if ( !kalmanResetGuard )        // reset only once entering back into active PID
-            {
-                resetKalmanFilter(pitch);
-                kalmanResetGuard = 1;
-            }
-            Ek   = 0.0;
-            SEk  = 0.0;
-            DEk  = 0.0;
-            Ek_1 = pitch;
-            Ek_2 = pitch;
+            PORTD |= STAT_RUN;          // turn on 'run' LED
         }
 
         // Kalman filter
-        Gyro_y = -1 * Gyro_y;               // swap polarity due to gyro orientation
-        Ek = kalmanFilter(pitch, Gyro_y, PID_LOOP_TIME);
+        Gyro_y = -1.0 * Gyro_y;         // swap polarity due to gyro orientation
+        ang_Ek = kalmanFilter(pitch, Gyro_y, PID_LOOP_TIME);
 
         // Complementary Filer
         // http://ozzmaker.com/2013/04/18/success-with-a-balancing-robot-using-a-raspberry-pi/
-        //Ek = (alpha * (Ek_1 + (Gyro_y * PID_LOOP_TIME))) + ((1 - alpha) * pitch);
+        //ang_Ek = (alpha * ((ang_Ek_1 - lean) + (Gyro_y * PID_LOOP_TIME))) + ((1 - alpha) * pitch);
 
         // PID calculation
         // source: https://en.wikipedia.org/wiki/PID_controller#Discrete_implementation
-        Ek  += lean;                        // offset for frame leaning
-        SEk += Ek * PID_LOOP_TIME;          // sum of error for integral part
-        DEk  = (Ek - Ek_2) / ( 2 * PID_LOOP_TIME); // difference of errors for differential part
-        Ek_2 = Ek_1;
-        Ek_1 = Ek;
+        ang_Ek  += lean;                // offset for MPU-6050 mounting and frame alignment
+        ang_SEk += ang_Ek;              // sum of error for integral part
+        ang_DEk  = (ang_Ek - ang_Ek_2); // difference of errors for differential part
+        ang_Ek_2 = ang_Ek_1;
+        ang_Ek_1 = ang_Ek;
 
-        if ( SEk > MAX_INTEG )              // prevent integrator wind-up
-            SEk = MAX_INTEG;
+        if ( ang_SEk > MAX_INTEG_AN )   // prevent integrator wind-up
+            ang_SEk = MAX_INTEG_AN;
 
-        if ( SEk < -MAX_INTEG )
-            SEk = -MAX_INTEG;
+        if ( ang_SEk < -MAX_INTEG_AN )
+            ang_SEk = -MAX_INTEG_AN;
 
-        Uk   = Kp*Ek + Ki*SEk + Kd*DEk;     // calculate PID
+        ang_Uk = Kp*ang_Ek + Ki*ang_SEk + Kd*ang_DEk;       // calculate PID
 
-        // setup motor turn direction
+        // wheel position PID
+        wheel_pid++;
+        if ( wheel_pid >= (PID_FREQ / PID_FRQ_WH) )
+        {
+            // calculate wheel position PID
+            pos_Ek   = -0.5 * ((float) nRightClicks + (float) nLeftClicks);    // crude position average *ignoring rotation* around base center
+            pos_SEk += pos_Ek;
+            pos_DEk  = (pos_Ek - pos_Ek_1);
+            pos_Ek_1 = pos_Ek;
+
+            pos_Uk = Cp*pos_Ek + Ci*pos_SEk + Cd*pos_DEk;
+
+            // zero click counter and PID frequency scaler
+            nRightClicks = 0;
+            nLeftClicks = 0;
+            wheel_pid = 0;
+        }
+
+        // combine PID controls for motor power
+        Uk = ang_Uk + pos_Uk;
+
+        // convert to motor power
         if ( Uk > 255.0 )                   // convert to integer
             motor_power = 255;
         else if ( Uk < -255.0 )
@@ -818,19 +837,28 @@ ISR(TIMER1_COMPA_vect)
         else
             motor_power = round(Uk);
 
+        // setup motor turn direction
         if ( motor_power < 0 )
+        {
             motor_dir = MOTOR_REV_RIGHT + MOTOR_REV_LEFT;
+            nRightDir = -1;
+            nLeftDir = -1;
+        }
         else if ( motor_power > 0 )
+        {
             motor_dir = MOTOR_FWD_RIGHT + MOTOR_FWD_LEFT;
+            nRightDir = 1;
+            nLeftDir = 1;
+        }
         else
+        {
             motor_dir = 0;
+            nRightDir = 0;
+            nLeftDir = 0;
+        }
 
         // setup motor pwm power
-        mp = abs(motor_power);
-        if ( mp > (MOTOR_PWM_MAX - pwm_min) )
-            mp = MOTOR_PWM_MAX - pwm_min;
-
-        pwm = ((uint8_t) mp) + pwm_min;
+        pwmRight = pwmLeft = ((uint8_t) abs(motor_power));
 
         // setup IO ports for motors
         port_b = PORTB;
@@ -838,28 +866,29 @@ ISR(TIMER1_COMPA_vect)
         port_b |= motor_dir;
 
         PORTB = port_b;
-        OCR0A = pwm;
-        OCR0B = pwm;
+        OCR0A = pwmRight;
+        OCR0B = pwmLeft;
 
         // toggle cycle-test signal
         PORTB ^= LOOP_TEST_POINT;
 
 #ifdef __DEBUG_PRINT__                      // if tracing is on then output some data
-        printfloat(pitch);
-        vprintfunc(",");
-        printfloat(Gyro_y);
-        vprintfunc(",");
-        printfloat(Ek);                     // print angle value (PV = Process Variable)
-        vprintfunc(",");
-        printfloat(Uk);                     // print control value (OP = Output)
-        vprintfunc("\n");
+        vprintfunc("%u,", timerTicks);
+        //printfloat(pitch);
+        //vprintfunc(",");
+        //printfloat(Gyro_y);
+        //vprintfunc(",");
+        printfloat(ang_Ek);                 // print angle value (PV = Process Variable)
+        //vprintfunc(",");
+        //printfloat(Uk);                     // print control value (OP = Output)
+        //vprintfunc("\n");
+        vprintfunc(",%d\n", motor_power);
 #endif  // trace is 'on'
     }
     else
     {
         PORTB &= MOTOR_CLR_DIR;                 // stop motors
         PORTD &= (~(STAT_RUN) | PB_PUP_INIT);   // turn off 'run' LED
-        kalmanResetGuard = 0;
         nSensorErr = 0;
     }
 }
@@ -873,6 +902,21 @@ ISR(TIMER1_COMPA_vect)
 ISR(ADC_vect)
 {
     uBattery = ADCH;  // read battery voltage from ADC register
+}
+
+/* ----------------------------------------------------------------------------
+ * Right and left wheel click counters
+ * These two interrupt routines function as a wheel click counter/encoder
+ *
+ */
+ISR(INT0_vect)
+{
+    nRightClicks += nRightDir;
+}
+
+ISR(INT1_vect)
+{
+    nLeftClicks  += nLeftDir;
 }
 
 /* ----------------------------------------------------------------------------
@@ -914,12 +958,23 @@ int main(void)
 
     // print working parameters
     vprintfunc("PID frequency %dHz\n", (uint8_t) PID_FREQ);
-    vprintfunc("PID Kp, Ki, Kd: ");
+
+    vprintfunc("balance PID Kp, Ki, Kd, lean: ");
     printfloat((float) KP);
     vprintfunc(", ");
     printfloat((float) KI);
     vprintfunc(", ");
     printfloat((float) KD);
+    vprintfunc(", ");
+    printfloat((float) LEAN);
+    vprintfunc("\n");
+
+    vprintfunc("position PID Cp, Ci, Cd: ");
+    printfloat((float) CP);
+    vprintfunc(", ");
+    printfloat((float) CI);
+    vprintfunc(", ");
+    printfloat((float) CD);
     vprintfunc("\n");
 
     // bring MPU-6050 out of sleep mode
@@ -942,10 +997,12 @@ int main(void)
     Kd      = (float) KD;
     lean    = (float) LEAN;
 
-    alpha   = (float) ALPHA;
-    kalmanResetGuard = 0;
+    Cp      = (float) CP;
+    Ci      = (float) CI;
+    Cd      = (float) CD;
 
-    pwm_min = (int) MOTOR_PWM_MIN;
+    alpha   = (float) ALPHA;
+
     runFlag = 0;
 
     // print command line prompt

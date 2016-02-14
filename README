@@ -18,22 +18,11 @@
  * |     +--< UART >---+     |
  * +-----+             +--+--+
  *                        |
- *              2x PWM channels to Servo
+ *              2x PWM channels to motor power board
+ *              2x Hall Effect sensor inputs from whell encoder
  *
  * ATmega AVR IO
  * ---------------
- * right motor PWM          OC0A        pin 12      out
- * left motor PWM           OC0B        pin 11      out
- * right motor direction    PB0..PB1    pin 14..15  out
- * PID timing               PB2         pin 16
- * left motor direction     PB6..PB7    pin 9..10   out
- *
- * Batt low/ok              PD2         pin 4       out
- * run/not-run              PD3         pin 5       out
- *
- * TWI                      SCL         pin 28      out
- * TWI                      SDA         pin 27      in/out
- * Batt sense               ADC0        pin 23      analog in
  *
  * Port B bit assignment
  *
@@ -54,12 +43,12 @@
  * |  |  |  |  |  |  |  |
  * |  |  |  |  |  |  |  +--- UART Rx
  * |  |  |  |  |  |  +------ UART Tx
- * |  |  |  |  |  +--------- 'o' batt. ok/low      0=batt.ok,1=batt.low (red LED)
- * |  |  |  |  +------------ 'o' run/not-run       0=not running,1=running (red LED)
- * |  |  |  +--------------- -
- * |  |  +------------------ '0' OC0A right PWM
- * |  +--------------------- '0' OC0B left PWM
- * +------------------------ -
+ * |  |  |  |  |  +--------- 'i' Right wheel Hall Effect sensor (INT0)
+ * |  |  |  |  +------------ 'i' Left wheel Hall Effect sensor (INT1)
+ * |  |  |  +--------------- 'o' batt. ok/low      0=batt.ok,1=batt.low (red LED)
+ * |  |  +------------------ 'o' OC0A right PWM
+ * |  +--------------------- 'o' OC0B left PWM
+ * +------------------------ 'o' run/not-run       0=not running,1=running (red LED)
  *
  * note: all references to data sheet are for ATmega 328P Rev. 8161D–AVR–10/09
  *
