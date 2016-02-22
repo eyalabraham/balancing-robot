@@ -3,11 +3,13 @@
  * this program is the control program for a 2-wheel balancing robot.
  * the robot is managed by a RaspberryPi connected to an ATmega328P,
  * which runs this code.
- * the AVR performs 2 tasks:
+ * the AVR performs:
  * AVR: (1) read MPU-6050 sensor
- *      (2) compute PID, and control motors
- *      (3) process commands coming from RPi
+ *      (2) read wheel encoder counters
+ *      (3) compute PID, and control motors
+ *      (4) process commands coming from RPi
  *
+ * steps 1 to 3 are executed in a 50Hz ISR and step 4 is the main-loop program section
  * RPi: send commands to AVR for changing PID constants and getting status
  *
  *                               +-----------+
@@ -15,11 +17,15 @@
  * +-----+          |  +-----+   +-----------+
  * |     |          |  |     |
  * | RPi |          +--+ AVR |
+ * |     |             |     |
  * |     +--< UART >---+     |
+ * |     |             |     |
+ * |     +--< SPI  >---+     |
+ * |     |             |     |
  * +-----+             +--+--+
  *                        |
  *              2x PWM channels to motor power board
- *              2x Hall Effect sensor inputs from whell encoder
+ *              2x Hall Effect sensor inputs from wheel encoder
  *
  * ATmega AVR IO
  * ---------------
@@ -28,13 +34,13 @@
  *
  * b7 b6 b5 b4 b3 b2 b1 b0
  * |  |  |  |  |  |  |  |
- * |  |  |  |  |  |  |  +--- 'o' right motor dir \ 0, 3=stop, 1=fwd, 2=rev
+ * |  |  |  |  |  |  |  +--- 'o' right motor dir \ 0 or 3=stop, 1=fwd, 2=rev
  * |  |  |  |  |  |  +------ 'o' right motor dir /
  * |  |  |  |  |  +--------- 'o' PID cycle test point
  * |  |  |  |  +------------ \
- * |  |  |  +---------------  | in circuit serial programmer
+ * |  |  |  +---------------  | SPI and GPIO pins for in circuit serial programmer
  * |  |  +------------------ /
- * |  +--------------------- 'o' left motor dir  \ 0, 3=stop, 1=fwd, 2=rev
+ * |  +--------------------- 'o' left motor dir  \ 0 or 3=stop, 1=fwd, 2=rev
  * +------------------------ 'o' left motor dir  /
  *
  * Port D bit assignment

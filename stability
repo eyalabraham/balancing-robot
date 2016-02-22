@@ -49,9 +49,19 @@ default configuration for MPU:
 *               tuning                             *
 ****************************************************
 
-stable balance on carpet:
-PID loop @ 50Hz
-kp      +80.0
-ki      +5.0
-kd      +20.0
+stable balance on carpet. February 13, 2016:
+PID loop @ 50Hz. Pololu motors, no wheel encoder
+lean    <default>
+kp      +85.0
+ki      +4.0
+kd      +25.0
 
+stable balance on carpet. February 20, 2016:
+PID loop @ 50Hz. DAGU motors with wheel encoders
+lean    -0.2
+kp      +110.0
+ki      +10.0
+kd      +35.0
+cp      +20.0
+ci      +0.0
+cd      +5.0

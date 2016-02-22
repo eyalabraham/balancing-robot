@@ -128,7 +128,6 @@
 #define     LED_BLINK_RATE  2       // LED blink rate in Hz
 
 // wheel position PID
-#define     PID_FRQ_WH      5       // wheel position/speed PID at 5Hz
 #define     CP              0.0
 #define     CI              0.0
 #define     CD              0.0
@@ -726,7 +725,7 @@ ISR(TIMER1_COMPA_vect)
     // general PID variables
     static float Uk;
     static uint8_t pwmRight, pwmLeft, motor_dir, port_b, tmp;
-    static int     motor_power, blink, wheel_pid;
+    static int     motor_power, blink;
     static float   distance, pitch;
 
     timerTicks++;   // increment main timer
@@ -809,22 +808,17 @@ ISR(TIMER1_COMPA_vect)
         ang_Uk = Kp*ang_Ek + Ki*ang_SEk + Kd*ang_DEk;       // calculate PID
 
         // wheel position PID
-        wheel_pid++;
-        if ( wheel_pid >= (PID_FREQ / PID_FRQ_WH) )
-        {
-            // calculate wheel position PID
-            pos_Ek   = -0.5 * ((float) nRightClicks + (float) nLeftClicks);    // crude position average *ignoring rotation* around base center
-            pos_SEk += pos_Ek;
-            pos_DEk  = (pos_Ek - pos_Ek_1);
-            pos_Ek_1 = pos_Ek;
+        // calculate wheel position PID
+        pos_Ek   = 0.5 * ((float) nRightClicks + (float) nLeftClicks);  // crude position average *ignoring rotation* around base center
+        pos_SEk += pos_Ek;
+        pos_DEk  = (pos_Ek - pos_Ek_1);
+        pos_Ek_1 = pos_Ek;
 
-            pos_Uk = Cp*pos_Ek + Ci*pos_SEk + Cd*pos_DEk;
+        pos_Uk = Cp*pos_Ek + Ci*pos_SEk + Cd*pos_DEk;
 
-            // zero click counter and PID frequency scaler
-            nRightClicks = 0;
-            nLeftClicks = 0;
-            wheel_pid = 0;
-        }
+        // zero click counter
+        nRightClicks = 0;
+        nLeftClicks = 0;
 
         // combine PID controls for motor power
         Uk = ang_Uk + pos_Uk;
