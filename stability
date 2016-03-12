@@ -49,6 +49,8 @@ default configuration for MPU:
 *               tuning                             *
 ****************************************************
 
+try 1
+------------
 stable balance on carpet. February 13, 2016:
 PID loop @ 50Hz. Pololu motors, no wheel encoder
 lean    <default>
@@ -56,12 +58,40 @@ kp      +85.0
 ki      +4.0
 kd      +25.0
 
+try 2
+------------
+PID loops are run in "parallel":
+    1) read angle/gyro and stabilize the system for a zero angle error
+    2) read wheel encoders and stabilize the system for a zero wheel velocity error
+    both outputs are summed and fed to the motors as a PWM control input
+    ** there might be a better way to do this as described by 'Dwacito' here: http://forum.arduino.cc/index.php?topic=197688.0
+
 stable balance on carpet. February 20, 2016:
 PID loop @ 50Hz. DAGU motors with wheel encoders
 lean    -0.2
 kp      +110.0
 ki      +10.0
 kd      +35.0
+
 cp      +20.0
 ci      +0.0
 cd      +5.0
+
+try 3
+------------
+PID loops that are run in "series":
+    1) read angle/gyro and wheel encoders to calculate robot velocity
+       stabilize the system for an angle that yields zero, or other *desired*, velocity
+    2) angle from step #1 is stabilized by a 'normal' PID
+    ** This is described by 'Dwacito' here: http://forum.arduino.cc/index.php?topic=197688.0
+       and works very nicely http://www.youtube.com/watch?v=SxB7yf4_Tj0
+PID loop @ 50Hz. DAGU motors with wheel encoders
+lean    -0.2
+kp      +95.0       <- used for 'normal' angle stabilization (step #2), same as in 'Try 2'
+ki      +7.5
+kd      +35.0
+
+alpha   +0.0           constant for velocity calculation, calculated: +7.028
+cp      +0.250      <- used for velocity stabilization (step #1)
+ci      +0.150
+cd      +0.0

@@ -16,9 +16,13 @@
  * |     |          |  |     |
  * | RPi |          +--+ AVR |
  * |     +--< UART >---+     |
+ * |     |             |     |
+ * |     +--< SPI  >---+     |
+ * |     |             |     |
  * +-----+             +--+--+
  *                        |
  *              2x PWM channels to Servo
+ *              2x Hall Effect sensor inputs from wheel encoder
  *
  * ATmega AVR IO
  * ---------------
@@ -118,7 +122,7 @@
 #define     KI              0.0
 #define     KD              0.0
 #define     MAX_INTEG_AN    100.0
-#define     LEAN           +1.05    // offset for MPU-6050 mounting and frame alignment in [deg]
+#define     LEAN            0.0     // offset for MPU-6050 mounting and frame alignment in [deg]
 #define     PID_ANGLE_LIM   30.0    // stop running PID outside this angle in [deg]
 
 // ballancing PID frequency Timer1 constant (sec 15.9.2 page 126..126)
@@ -131,10 +135,10 @@
 #define     CP              0.0
 #define     CI              0.0
 #define     CD              0.0
-#define     MAX_INTEG_MT    100.0
+#define     MAX_INTEG_VEL   2.0
 
-// complementary filter constant
-#define     ALPHA           0.98
+// platform velocity scaler
+#define     ALPHA           7.028   // C.O.G height in wheel encoder clicks and [red] to [deg] conversion
 
 // kalman filter definitions
 #define     PID_LOOP_TIME   ((float)(1.0/(float)PID_FREQ))
@@ -198,14 +202,13 @@
   get lean                     - frame leaning\n\
   get batt                     - battery voltage\n\
   get run                      - go/no-go state\n\
-  get pwmmin                   - show pwm min value\n\
-  get alpha                    - print comp. filter alpha\n\
+  get alpha                    - print platform velocity scaler\n\
   set prompt <on> | <off>      - set prompt\n\
   set [<kp> | <ki> | <kd>] <n> - set balance PID constants\n\
   set [<cp> | <ci> | <cd>] <n> - set position PID constants\n\
   set lean <lean>              - set frame leaning\n\
   set run <1|0>                - set run flag to 1=go, 0=stop\n\
-  set alpha <a>                - set filter alpha\n\
+  set alpha <a>                - set platform velocity scaler\n\
   set dlpf <0..6>              - set MPU DLPF (=6)\n\
   set accl <0..3>              - set MPU Accel (=1)\n\
   set gyro <0..3>              - set MPU Gyro (=1)\n"
@@ -254,7 +257,7 @@ float Gyro_y;                   // gyroscope X, TIMER1 ISR global variable
 float Accel_scale;              // accelerometer scaler
 float Gyro_scale;               // gyro scaler
 
-float alpha = (float) ALPHA;    // complementary filter constant
+float alpha = (float) ALPHA;    // platform velocity scaler
 
 // angle PID formula variable
 volatile    float Kp, Ki, Kd;   // angle PID factors
@@ -262,6 +265,7 @@ volatile    float lean;         // platform lean constant
 
 // wheel position PID formula variable
 volatile    float Cp, Ci, Cd;   // wheel position PID factors
+volatile    float velTarget;    // target velocity of the robot systems
 
 // Kalman filter variable
 float Q_angle = 0.001;          // Process noise variance for the accelerometer
@@ -713,14 +717,14 @@ ISR(TIMER1_COMPA_vect)
     static float ang_DEk  = 0.0;
     static float ang_Ek_1 = 0.0;
     static float ang_Ek_2 = 0.0;
-    static float ang_Uk   = 0.0;
 
-    // wheel position PID formula variable
-    static float pos_Ek;
-    static float pos_SEk  = 0.0;
-    static float pos_DEk  = 0.0;
-    static float pos_Ek_1 = 0.0;
-    static float pos_Uk   = 0.0;
+    // platform velocity PID variables
+    static float angActual, angActual_1, angTarget, posWheel, posWheel_1, velCog;
+    static float vel_Ek;
+    static float vel_SEk  = 0.0;
+    static float vel_DEk  = 0.0;
+    static float vel_Ek_1 = 0.0;
+    static int   nPrevRightClicks = 0, nPrevLeftClicks = 0;
 
     // general PID variables
     static float Uk;
@@ -785,17 +789,40 @@ ISR(TIMER1_COMPA_vect)
 
         // Kalman filter
         Gyro_y = -1.0 * Gyro_y;         // swap polarity due to gyro orientation
-        ang_Ek = kalmanFilter(pitch, Gyro_y, PID_LOOP_TIME);
+        angActual = kalmanFilter(pitch, Gyro_y, PID_LOOP_TIME);
 
-        // Complementary Filer
-        // http://ozzmaker.com/2013/04/18/success-with-a-balancing-robot-using-a-raspberry-pi/
-        //ang_Ek = (alpha * ((ang_Ek_1 - lean) + (Gyro_y * PID_LOOP_TIME))) + ((1 - alpha) * pitch);
+        // PID control over platform velocity which is the center of gravity velocity velCog:
+        //   velCog = alpha x velAngl + velWheel
+        // the PID will control the difference between a target velocity and velCog:
+        //   velErr -> 0, vel_Ek = velTarget - velCog
+        // idea source: http://forum.arduino.cc/index.php?topic=197688.0
+        posWheel   = 0.5 * ((float) (nRightClicks - nPrevRightClicks) +     // crude position average *ignoring rotation* around base center
+                            (float) (nLeftClicks - nPrevLeftClicks));
+        nPrevRightClicks = nRightClicks;                                    // store for next round
+        nPrevLeftClicks = nLeftClicks;
+
+        velCog     = alpha * (angActual - angActual_1) + (posWheel - posWheel_1); // calculate COG velocity
+        angActual_1 = angActual;                                            // save angle for next cycle
+        posWheel_1 = posWheel;                                              // save wheel clicks for next cycle
+
+        vel_Ek   = velTarget - velCog;                                      // calculate PID against a target velocity
+        vel_SEk += vel_Ek;
+        vel_DEk  = (vel_Ek - vel_Ek_1);
+        vel_Ek_1 = vel_Ek;
+
+        if ( vel_SEk > MAX_INTEG_VEL )                                      // prevent integrator wind-up
+            vel_SEk = MAX_INTEG_VEL;
+
+        if ( vel_SEk < -MAX_INTEG_VEL )
+            vel_SEk = -MAX_INTEG_VEL;
+
+        angTarget = Cp*vel_Ek + Ci*vel_SEk + Cd*vel_DEk;
 
         // PID calculation
         // source: https://en.wikipedia.org/wiki/PID_controller#Discrete_implementation
-        ang_Ek  += lean;                // offset for MPU-6050 mounting and frame alignment
-        ang_SEk += ang_Ek;              // sum of error for integral part
-        ang_DEk  = (ang_Ek - ang_Ek_2); // difference of errors for differential part
+        ang_Ek   = angTarget - angActual + lean;    // angle error between actual and target, with platform lean offset
+        ang_SEk += ang_Ek;                          // sum of error for integral part
+        ang_DEk  = (ang_Ek - ang_Ek_2);             // difference of errors for differential part
         ang_Ek_2 = ang_Ek_1;
         ang_Ek_1 = ang_Ek;
 
@@ -805,23 +832,7 @@ ISR(TIMER1_COMPA_vect)
         if ( ang_SEk < -MAX_INTEG_AN )
             ang_SEk = -MAX_INTEG_AN;
 
-        ang_Uk = Kp*ang_Ek + Ki*ang_SEk + Kd*ang_DEk;       // calculate PID
-
-        // wheel position PID
-        // calculate wheel position PID
-        pos_Ek   = 0.5 * ((float) nRightClicks + (float) nLeftClicks);  // crude position average *ignoring rotation* around base center
-        pos_SEk += pos_Ek;
-        pos_DEk  = (pos_Ek - pos_Ek_1);
-        pos_Ek_1 = pos_Ek;
-
-        pos_Uk = Cp*pos_Ek + Ci*pos_SEk + Cd*pos_DEk;
-
-        // zero click counter
-        nRightClicks = 0;
-        nLeftClicks = 0;
-
-        // combine PID controls for motor power
-        Uk = ang_Uk + pos_Uk;
+        Uk = Kp*ang_Ek + Ki*ang_SEk + Kd*ang_DEk;       // calculate PID
 
         // convert to motor power
         if ( Uk > 255.0 )                   // convert to integer
@@ -832,13 +843,13 @@ ISR(TIMER1_COMPA_vect)
             motor_power = round(Uk);
 
         // setup motor turn direction
-        if ( motor_power < 0 )
+        if ( motor_power > 0 )
         {
             motor_dir = MOTOR_REV_RIGHT + MOTOR_REV_LEFT;
             nRightDir = -1;
             nLeftDir = -1;
         }
-        else if ( motor_power > 0 )
+        else if ( motor_power < 0 )
         {
             motor_dir = MOTOR_FWD_RIGHT + MOTOR_FWD_LEFT;
             nRightDir = 1;
@@ -901,6 +912,7 @@ ISR(ADC_vect)
 /* ----------------------------------------------------------------------------
  * Right and left wheel click counters
  * These two interrupt routines function as a wheel click counter/encoder
+ * integers will over flow / roll over after approx. 14[m] (45 [ft]) in one direction.
  *
  */
 ISR(INT0_vect)
@@ -953,22 +965,22 @@ int main(void)
     // print working parameters
     vprintfunc("PID frequency %dHz\n", (uint8_t) PID_FREQ);
 
-    vprintfunc("balance PID Kp, Ki, Kd, lean: ");
-    printfloat((float) KP);
-    vprintfunc(", ");
-    printfloat((float) KI);
-    vprintfunc(", ");
-    printfloat((float) KD);
-    vprintfunc(", ");
-    printfloat((float) LEAN);
-    vprintfunc("\n");
-
-    vprintfunc("position PID Cp, Ci, Cd: ");
+    vprintfunc("velocity PID Cp, Ci, Cd, lean: ");
     printfloat((float) CP);
     vprintfunc(", ");
     printfloat((float) CI);
     vprintfunc(", ");
     printfloat((float) CD);
+    vprintfunc(", ");
+    printfloat((float) LEAN);
+    vprintfunc("\n");
+
+    vprintfunc("balance PID Kp, Ki, Kd: ");
+    printfloat((float) KP);
+    vprintfunc(", ");
+    printfloat((float) KI);
+    vprintfunc(", ");
+    printfloat((float) KD);
     vprintfunc("\n");
 
     // bring MPU-6050 out of sleep mode
@@ -991,11 +1003,12 @@ int main(void)
     Kd      = (float) KD;
     lean    = (float) LEAN;
 
-    Cp      = (float) CP;
-    Ci      = (float) CI;
-    Cd      = (float) CD;
+    Cp        = (float) CP;
+    Ci        = (float) CI;
+    Cd        = (float) CD;
 
-    alpha   = (float) ALPHA;
+    velTarget = (float) 0.0;
+    alpha     = (float) ALPHA;
 
     runFlag = 0;
 
@@ -1006,9 +1019,17 @@ int main(void)
     while ( 1 )
     {
         // sample battery voltage level and reflect in LED
-        if ( uBattery < BATT_LVL_70 )
+        if ( uBattery < BATT_LVL_70 && uBattery > BATT_LVL_65)
+        {
+            // LiPo low level warning
             PORTD |= STAT_TOGG_BATT;
+        }
+        else if (uBattery <= BATT_LVL_65 )
+        {
+            // extreme low level, or NiMH / NiCd low level
+        }
         else
+            // battery at safe level > 7.0v
             PORTD &= (~(STAT_TOGG_BATT) | PB_PUP_INIT);
         
         // sensor error
