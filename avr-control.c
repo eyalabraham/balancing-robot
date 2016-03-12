@@ -16,9 +16,13 @@
  * |     |          |  |     |
  * | RPi |          +--+ AVR |
  * |     +--< UART >---+     |
+ * |     |             |     |
+ * |     +--< SPI  >---+     |
+ * |     |             |     |
  * +-----+             +--+--+
  *                        |
- *              2x PWM channels to Servo
+ *              2x PWM channels to motor power board
+ *              2x Hall Effect sensor inputs from wheel encoder
  *
  * ATmega AVR IO
  * ---------------
@@ -39,13 +43,13 @@
  *
  * b7 b6 b5 b4 b3 b2 b1 b0
  * |  |  |  |  |  |  |  |
- * |  |  |  |  |  |  |  +--- 'o' right motor dir \ 0, 3=stop, 1=fwd, 2=rev
+ * |  |  |  |  |  |  |  +--- 'o' right motor dir \ 0 or 3=stop, 1=fwd, 2=rev
  * |  |  |  |  |  |  +------ 'o' right motor dir /
  * |  |  |  |  |  +--------- 'o' PID cycle test point
  * |  |  |  |  +------------ \
  * |  |  |  +---------------  | in circuit serial programmer
  * |  |  +------------------ /
- * |  +--------------------- 'o' left motor dir  \ 0, 3=stop, 1=fwd, 2=rev
+ * |  +--------------------- 'o' left motor dir  \ 0 or 3=stop, 1=fwd, 2=rev
  * +------------------------ 'o' left motor dir  /
  *
  * Port D bit assignment
@@ -118,7 +122,7 @@
 #define     KI              0.0
 #define     KD              0.0
 #define     MAX_INTEG_AN    100.0
-#define     LEAN           +1.05    // offset for MPU-6050 mounting and frame alignment in [deg]
+#define     LEAN           -0.2     // offset for MPU-6050 mounting and frame alignment in [deg]
 #define     PID_ANGLE_LIM   30.0    // stop running PID outside this angle in [deg]
 
 // ballancing PID frequency Timer1 constant (sec 15.9.2 page 126..126)
@@ -132,9 +136,6 @@
 #define     CI              0.0
 #define     CD              0.0
 #define     MAX_INTEG_MT    100.0
-
-// complementary filter constant
-#define     ALPHA           0.98
 
 // kalman filter definitions
 #define     PID_LOOP_TIME   ((float)(1.0/(float)PID_FREQ))
@@ -198,14 +199,11 @@
   get lean                     - frame leaning\n\
   get batt                     - battery voltage\n\
   get run                      - go/no-go state\n\
-  get pwmmin                   - show pwm min value\n\
-  get alpha                    - print comp. filter alpha\n\
   set prompt <on> | <off>      - set prompt\n\
   set [<kp> | <ki> | <kd>] <n> - set balance PID constants\n\
   set [<cp> | <ci> | <cd>] <n> - set position PID constants\n\
   set lean <lean>              - set frame leaning\n\
   set run <1|0>                - set run flag to 1=go, 0=stop\n\
-  set alpha <a>                - set filter alpha\n\
   set dlpf <0..6>              - set MPU DLPF (=6)\n\
   set accl <0..3>              - set MPU Accel (=1)\n\
   set gyro <0..3>              - set MPU Gyro (=1)\n"
@@ -253,8 +251,6 @@ float Gyro_x;                   // gyroscope X, TIMER1 ISR global variable
 float Gyro_y;                   // gyroscope X, TIMER1 ISR global variable
 float Accel_scale;              // accelerometer scaler
 float Gyro_scale;               // gyro scaler
-
-float alpha = (float) ALPHA;    // complementary filter constant
 
 // angle PID formula variable
 volatile    float Kp, Ki, Kd;   // angle PID factors
@@ -507,11 +503,6 @@ int process_cli(char *commandLine)
         {
             Cd = atof(tokens[2]);
         }
-        // set Complementary alpha
-        else if ( strcmp(tokens[1], "alpha") == 0 )
-        {
-            alpha = atof(tokens[2]);
-        }
         // set run flag
         else if ( strcmp(tokens[1], "run") == 0 )
         {
@@ -622,12 +613,6 @@ int process_cli(char *commandLine)
         else if ( strcmp(tokens[1], "lean") == 0 )
         {
             printfloat(lean);
-            vprintfunc("\n");
-        }
-        // get alpha                - print Complementary filter alpha
-        else if ( strcmp(tokens[1], "alpha") == 0 )
-        {
-            printfloat(alpha);
             vprintfunc("\n");
         }
         // get batt                 - battery voltage
@@ -786,10 +771,6 @@ ISR(TIMER1_COMPA_vect)
         // Kalman filter
         Gyro_y = -1.0 * Gyro_y;         // swap polarity due to gyro orientation
         ang_Ek = kalmanFilter(pitch, Gyro_y, PID_LOOP_TIME);
-
-        // Complementary Filer
-        // http://ozzmaker.com/2013/04/18/success-with-a-balancing-robot-using-a-raspberry-pi/
-        //ang_Ek = (alpha * ((ang_Ek_1 - lean) + (Gyro_y * PID_LOOP_TIME))) + ((1 - alpha) * pitch);
 
         // PID calculation
         // source: https://en.wikipedia.org/wiki/PID_controller#Discrete_implementation
@@ -994,8 +975,6 @@ int main(void)
     Cp      = (float) CP;
     Ci      = (float) CI;
     Cd      = (float) CD;
-
-    alpha   = (float) ALPHA;
 
     runFlag = 0;
 
