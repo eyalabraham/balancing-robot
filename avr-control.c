@@ -135,7 +135,7 @@
 #define     CP              0.0
 #define     CI              0.0
 #define     CD              0.0
-#define     MAX_INTEG_MT    100.0
+#define     MAX_INTEG_POS   100.0
 
 // kalman filter definitions
 #define     PID_LOOP_TIME   ((float)(1.0/(float)PID_FREQ))
@@ -263,12 +263,6 @@ volatile    float Cp, Ci, Cd;   // wheel position PID factors
 float Q_angle = 0.001;          // Process noise variance for the accelerometer
 float Q_gyro  = 0.003;          // Process noise variance for the gyro bias
 float R_angle = 0.03;           // Measurement noise variance - this is the variance of the measurement noise
-float angle   = 0.0;
-float bias    = 0.0;
-float P_00    = 0.0,
-      P_01    = 0.0,
-      P_10    = 0.0,
-      P_11    = 0.0;
 
 /* ----------------------------------------------------------------------------
  * ioinit()
@@ -650,7 +644,14 @@ int process_cli(char *commandLine)
  */
 float kalmanFilter(float newAngle, float newRate, float looptime)
 {
+    // Kalman filter variable
     static float y, S, K_0, K_1;
+    static float angle   = 0.0;
+    static float bias    = 0.0;
+    static float P_00    = 0.0,
+                 P_01    = 0.0,
+                 P_10    = 0.0,
+                 P_11    = 0.0;
 
     angle += looptime * (newRate - bias);
 
@@ -706,6 +707,7 @@ ISR(TIMER1_COMPA_vect)
     static float pos_DEk  = 0.0;
     static float pos_Ek_1 = 0.0;
     static float pos_Uk   = 0.0;
+    static int   nPrevRightClicks = 0, nPrevLeftClicks = 0;
 
     // general PID variables
     static float Uk;
@@ -786,26 +788,31 @@ ISR(TIMER1_COMPA_vect)
         if ( ang_SEk < -MAX_INTEG_AN )
             ang_SEk = -MAX_INTEG_AN;
 
-        ang_Uk = Kp*ang_Ek + Ki*ang_SEk + Kd*ang_DEk;       // calculate PID
+        ang_Uk = Kp*ang_Ek + Ki*ang_SEk + Kd*ang_DEk;   // calculate PID
 
         // wheel position PID
         // calculate wheel position PID
-        pos_Ek   = 0.5 * ((float) nRightClicks + (float) nLeftClicks);  // crude position average *ignoring rotation* around base center
+        pos_Ek   = 0.5 * ((float) (nRightClicks - nPrevRightClicks) +   // crude position average *ignoring rotation* around base center
+                          (float) (nLeftClicks - nPrevLeftClicks));
+        nPrevRightClicks = nRightClicks;                                // store for next round
+        nPrevLeftClicks = nLeftClicks;
+
         pos_SEk += pos_Ek;
         pos_DEk  = (pos_Ek - pos_Ek_1);
         pos_Ek_1 = pos_Ek;
 
-        pos_Uk = Cp*pos_Ek + Ci*pos_SEk + Cd*pos_DEk;
+        if ( pos_SEk > MAX_INTEG_POS )  // prevent integrator wind-up
+            pos_SEk = MAX_INTEG_POS;
+        if ( pos_SEk < -MAX_INTEG_POS )
+            pos_SEk = -MAX_INTEG_POS;
 
-        // zero click counter
-        nRightClicks = 0;
-        nLeftClicks = 0;
+        pos_Uk = Cp*pos_Ek + Ci*pos_SEk + Cd*pos_DEk;
 
         // combine PID controls for motor power
         Uk = ang_Uk + pos_Uk;
 
         // convert to motor power
-        if ( Uk > 255.0 )                   // convert to integer
+        if ( Uk > 255.0 )               // convert to integer
             motor_power = 255;
         else if ( Uk < -255.0 )
             motor_power = -255;
@@ -882,6 +889,7 @@ ISR(ADC_vect)
 /* ----------------------------------------------------------------------------
  * Right and left wheel click counters
  * These two interrupt routines function as a wheel click counter/encoder
+ * integers will overflow / roll over after approx. 14[m] (45 [ft]) in one direction.
  *
  */
 ISR(INT0_vect)

@@ -63,3 +63,13 @@ kd      +35.0
 cp      +20.0
 ci      +0.0
 cd      +5.0
+
+stable balance on carpet. March 12, 2016:
+PID loop @ 20Hz. DAGU motors with wheel encoders
+lean    -0.2
+kp      +110.0
+ki      +10.0
+kd      +35.0
+cp      +20.0
+ci      +0.0
+cd      +5.0
