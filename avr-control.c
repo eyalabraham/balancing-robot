@@ -122,7 +122,7 @@
 #define     KI              0.0
 #define     KD              0.0
 #define     MAX_INTEG_AN    100.0
-#define     LEAN           -0.2     // offset for MPU-6050 mounting and frame alignment in [deg]
+#define     TILT_OFFSET     2.0     // offset for MPU-6050 mounting and frame alignment in [deg]
 #define     PID_ANGLE_LIM   30.0    // stop running PID outside this angle in [deg]
 
 // balancing PID frequency Timer1 constant (sec 15.9.2 page 126..126)
@@ -196,13 +196,13 @@
   help                         - help text\n\
   get <kp> | <ki> | <kd>       - balance PID constants\n\
   get <cp> | <ci> | <cd>       - position PID constants\n\
-  get lean                     - frame leaning\n\
+  get tilt offset              - frame tilt offset\n\
   get batt                     - battery voltage\n\
   get run                      - go/no-go state\n\
   set prompt <on> | <off>      - set prompt\n\
   set [<kp> | <ki> | <kd>] <n> - set balance PID constants\n\
   set [<cp> | <ci> | <cd>] <n> - set position PID constants\n\
-  set lean <lean>              - set frame leaning\n\
+  set tilt <tilt>              - set frame tilt offset\n\
   set run <1|0>                - set run flag to 1=go, 0=stop\n\
   set dlpf <0..6>              - set MPU DLPF (=6)\n\
   set accl <0..3>              - set MPU Accel (=1)\n\
@@ -254,7 +254,7 @@ float Gyro_scale;               // gyro scaler
 
 // angle PID formula variable
 volatile    float Kp, Ki, Kd;   // angle PID factors
-volatile    float lean;         // platform lean constant
+volatile    float tilt_offset;  // platform tilt offset constant
 
 // wheel position PID formula variable
 volatile    float Cp, Ci, Cd;   // wheel position PID factors
@@ -467,10 +467,10 @@ int process_cli(char *commandLine)
             else
                 nDoPrompt = 0;
         }
-        // set lean <lean>          - set frame leaning level with fixed-point number (format Q10.5)
-        else if ( strcmp(tokens[1], "lean") == 0 )
+        // set tilt <tilt>          - set frame tilt offset level
+        else if ( strcmp(tokens[1], "tilt") == 0 )
         {
-            lean = atof(tokens[2]);
+            tilt_offset = atof(tokens[2]);
         }
         // set [<kp> | <ki> | <kd> | <cp> | <ci> | <cd>] <num>   - set one of the PID constants with fixed-point number (format Q10.5)
         else if ( strcmp(tokens[1], "kp") == 0 )
@@ -603,10 +603,10 @@ int process_cli(char *commandLine)
             printfloat(Cd);
             vprintfunc("\n");
         }
-        // get lean                 - print frame leaning value as: fixed-point, float
-        else if ( strcmp(tokens[1], "lean") == 0 )
+        // get tilt                 - print frame tilt offset value
+        else if ( strcmp(tokens[1], "tilt") == 0 )
         {
-            printfloat(lean);
+            printfloat(tilt_offset);
             vprintfunc("\n");
         }
         // get batt                 - battery voltage
@@ -701,6 +701,9 @@ ISR(TIMER1_COMPA_vect)
     static float ang_Ek_2 = 0.0;
     static float ang_Uk   = 0.0;
 
+    // Orientation PID variables
+    static float orient_Uk = 0.0;
+
     // wheel position PID formula variable
     static float pos_Ek;
     static float pos_SEk  = 0.0;
@@ -721,6 +724,35 @@ ISR(TIMER1_COMPA_vect)
     {
         // toggle b7 to output a cycle-test signal
         PORTB ^= LOOP_TEST_POINT;
+
+        /* Odometry PID section: position, velocity, and orientation
+         */
+
+/*
+		// wheel position PID
+		// calculate wheel position PID
+		pos_Ek   = 0.5 * ((float) (nRightClicks - nPrevRightClicks) +   // crude position average *ignoring rotation* around base center
+						  (float) (nLeftClicks - nPrevLeftClicks));
+		nPrevRightClicks = nRightClicks;                                // store for next round
+		nPrevLeftClicks = nLeftClicks;
+
+		pos_SEk += pos_Ek;
+		pos_DEk  = (pos_Ek - pos_Ek_1);
+		pos_Ek_1 = pos_Ek;
+
+		if ( pos_SEk > MAX_INTEG_POS )  // prevent integrator wind-up
+			pos_SEk = MAX_INTEG_POS;
+		if ( pos_SEk < -MAX_INTEG_POS )
+			pos_SEk = -MAX_INTEG_POS;
+
+		pos_Uk = Cp*pos_Ek + Ci*pos_SEk + Cd*pos_DEk;
+
+		// combine PID controls for motor power
+		Uk = ang_Uk + pos_Uk;
+*/
+
+        /* Gyro and accelerometer sensing and filtering
+         */
 
         // burst read accelerometer and gyro
         nSensorErr = i2c_m_burstRead(MPU_ADD, ACCEL_X, MPU_REGS, mpu6050.mpuData);
@@ -774,9 +806,10 @@ ISR(TIMER1_COMPA_vect)
         Gyro_y = -1.0 * Gyro_y;         // swap polarity due to gyro orientation
         ang_Ek = kalmanFilter(pitch, Gyro_y, PID_LOOP_TIME);
 
-        // PID calculation
-        // source: https://en.wikipedia.org/wiki/PID_controller#Discrete_implementation
-        ang_Ek  += lean;                // offset for MPU-6050 mounting and frame alignment
+        /* TiltPID calculation
+         * source: https://en.wikipedia.org/wiki/PID_controller#Discrete_implementation
+         */
+        ang_Ek  += tilt_offset;         // offset for MPU-6050 mounting and frame alignment
         ang_SEk += ang_Ek;              // sum of error for integral part
         ang_DEk  = (ang_Ek - ang_Ek_2); // difference of errors for differential part
         ang_Ek_2 = ang_Ek_1;
@@ -790,57 +823,65 @@ ISR(TIMER1_COMPA_vect)
 
         ang_Uk = Kp*ang_Ek + Ki*ang_SEk + Kd*ang_DEk;   // calculate PID
 
-        // wheel position PID
-        // calculate wheel position PID
-        pos_Ek   = 0.5 * ((float) (nRightClicks - nPrevRightClicks) +   // crude position average *ignoring rotation* around base center
-                          (float) (nLeftClicks - nPrevLeftClicks));
-        nPrevRightClicks = nRightClicks;                                // store for next round
-        nPrevLeftClicks = nLeftClicks;
+        /* Combine tilt and orientation PID and calculate
+         * left and right motorPWM power setting and turn direction.
+         */
 
-        pos_SEk += pos_Ek;
-        pos_DEk  = (pos_Ek - pos_Ek_1);
-        pos_Ek_1 = pos_Ek;
+        motor_dir = 0;
 
-        if ( pos_SEk > MAX_INTEG_POS )  // prevent integrator wind-up
-            pos_SEk = MAX_INTEG_POS;
-        if ( pos_SEk < -MAX_INTEG_POS )
-            pos_SEk = -MAX_INTEG_POS;
+        // Calculate ** left ** motor PWM settings from PID outputs
+        Uk = ang_Uk - orient_Uk;
 
-        pos_Uk = Cp*pos_Ek + Ci*pos_SEk + Cd*pos_DEk;
-
-        // combine PID controls for motor power
-        Uk = ang_Uk + pos_Uk;
-
-        // convert to motor power
-        if ( Uk > 255.0 )               // convert to integer
-            motor_power = 255;
+        if ( Uk > 255.0 )
+        	motor_power = 255;
         else if ( Uk < -255.0 )
-            motor_power = -255;
+        	motor_power = -255;
         else
-            motor_power = round(Uk);
+        	motor_power = round(Uk);
 
-        // setup motor turn direction
         if ( motor_power < 0 )
         {
-            motor_dir = MOTOR_REV_RIGHT + MOTOR_REV_LEFT;
-            nRightDir = -1;
+            motor_dir |= MOTOR_REV_LEFT;
             nLeftDir = -1;
         }
         else if ( motor_power > 0 )
         {
-            motor_dir = MOTOR_FWD_RIGHT + MOTOR_FWD_LEFT;
-            nRightDir = 1;
+            motor_dir |= MOTOR_FWD_LEFT;
             nLeftDir = 1;
         }
         else
         {
-            motor_dir = 0;
-            nRightDir = 0;
             nLeftDir = 0;
         }
 
-        // setup motor pwm power
-        pwmRight = pwmLeft = ((uint8_t) abs(motor_power));
+        pwmLeft = ((uint8_t) abs(motor_power));
+
+        // Calculate ** right ** motor PWM settings from PID outputs
+        Uk = ang_Uk + orient_Uk;
+
+        if ( Uk > 255.0 )
+        	motor_power = 255;
+        else if ( Uk < -255.0 )
+        	motor_power = -255;
+        else
+        	motor_power = round(Uk);
+
+        if ( motor_power < 0 )
+        {
+            motor_dir |= MOTOR_REV_RIGHT;
+            nRightDir = -1;
+        }
+        else if ( motor_power > 0 )
+        {
+            motor_dir |= MOTOR_FWD_RIGHT;
+            nRightDir = 1;
+        }
+        else
+        {
+        	nRightDir = 0;
+        }
+
+        pwmRight = ((uint8_t) abs(motor_power));
 
         // setup IO ports for motors
         port_b = PORTB;
@@ -942,14 +983,14 @@ int main(void)
     // print working parameters
     vprintfunc("PID frequency %dHz\n", (uint8_t) PID_FREQ);
 
-    vprintfunc("balance PID Kp, Ki, Kd, lean: ");
+    vprintfunc("balance PID Kp, Ki, Kd, tilt: ");
     printfloat((float) KP);
     vprintfunc(", ");
     printfloat((float) KI);
     vprintfunc(", ");
     printfloat((float) KD);
     vprintfunc(", ");
-    printfloat((float) LEAN);
+    printfloat((float) TILT_OFFSET);
     vprintfunc("\n");
 
     vprintfunc("position PID Cp, Ci, Cd: ");
@@ -975,14 +1016,14 @@ int main(void)
     sei();
 
     // setup constants
-    Kp      = (float) KP;
-    Ki      = (float) KI;
-    Kd      = (float) KD;
-    lean    = (float) LEAN;
+    Kp = (float) KP;
+    Ki = (float) KI;
+    Kd = (float) KD;
+    tilt_offset = (float) TILT_OFFSET;
 
-    Cp      = (float) CP;
-    Ci      = (float) CI;
-    Cd      = (float) CD;
+    Cp = (float) CP;
+    Ci = (float) CI;
+    Cd = (float) CD;
 
     runFlag = 0;
 
