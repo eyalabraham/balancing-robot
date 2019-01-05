@@ -125,7 +125,7 @@
 #define     LEAN           -0.2     // offset for MPU-6050 mounting and frame alignment in [deg]
 #define     PID_ANGLE_LIM   30.0    // stop running PID outside this angle in [deg]
 
-// ballancing PID frequency Timer1 constant (sec 15.9.2 page 126..126)
+// balancing PID frequency Timer1 constant (sec 15.9.2 page 126..126)
 #define     PID_FREQ        50      // <------PID frequency in Hz
 #define     TIM1_FREQ_CONST ((PRE_SCALER / PID_FREQ) -1)
 #define     PRE_SCALER      7812    // 8MHz clock divided by 1024 pre scaler
@@ -339,10 +339,10 @@ void reset(void)
 {
      cli();
     // Note that for newer devices (any AVR that has the option to also
-    // generate WDT interrupts), the watchdog timer remains active even
+    // generate WDT interrupts), the watch dog timer remains active even
     // after a system reset (except a power-on condition), using the fastest
-    // prescaler value (approximately 15 ms). It is therefore required
-    // to turn off the watchdog early during program startup.
+    // pre-scaler value (approximately 15 ms). It is therefore required
+    // to turn off the watch dog early during program startup.
     MCUSR = 0; // clear reset flags
     wdt_disable();
 }

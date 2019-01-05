@@ -73,3 +73,11 @@ kd      +35.0
 cp      +20.0
 ci      +0.0
 cd      +5.0
+
+stable balance with new gearing. January 4, 2019
+PID loop @ 50Hz. DAGU motors with wheel encoders
+lean    +2.0
+kp      +500.000
+kd      +150.000
+ki      +0.000
+
