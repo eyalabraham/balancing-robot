@@ -58,30 +58,38 @@ Steps 1 to 3 are executed in a 50Hz ISR and step 4 is the main-loop program sect
  *
  * Command line list see source or type 'help'<CR>
 ```
+
 ## Control loops
+Design resource: <https://www.semanticscholar.org/paper/Movement-control-of-two-wheels-balancing-robot-PID-Pratama-Binugroho/d5ffbb30b6e7c6b8e39906fa08703af238be4336>
+
+```
+                                                               +---------+
+                +-- 'pos_Uk' --[ Position PID ]---- 'pos_Ek' --+ Encoder +------+
+                |                                              | Process +-+    |
+                |                                              +         + |    |
+                |                                              +---------+ |    |
+'tilt_offset' -(+)                                                         |    |
+                |                                                          |    |
+ +- 'ang_Ek' --(+)          'orient_Uk'                                    |    |
+ |              |               |                                          |    |
+ |              |               |                                          |    |
+ |         [ Tilt PD ]          |                                       +--+----+--+
+ |              |               +---+                                   |          |
+ |           'ang_Uk'           |   |                   'pwmLeft'       |          |
+ |              |           +--(-)- | ---[ PWM ]----[ left motor  ]-----+          |
+ |              |           |       |                                   |          |
+ |              +-----------+   ----+                                   | Robot    |
+ |                          |   |                       'pwmRight'      | Platform |
+ |                          +--(+)-------[ PWM ]----[ right motor ]-----+          |
+ |                                                                      |          |
+ |                                                                      |          |
+ |                          +-[ Gyroscope     ]-------------------------+          |
+ +----[ Kalman filter ]-----+                                           |          |
+                            +-[ Accelerometer ]-------------------------+          |
+                                                                        |          |
+                                                                        +----------+
 ```
 
-                |
-'tilt_offset' -(+)
-                |
- +-------------(+)          'orient_Uk'
- |              |               |
- |              |               |
- |         [ Tilt PID ]         |                                       +-----------+
- |              |               +---+                                   |           |
- |           'ang_Uk'           |   |                   'pwmLeft'       |           |
- |              |           +--(-)- | ---[ PWM ]----[ left motor  ]-----+           |
- |              |           |       |                                   |           |
- |              +-----------+   ----+                                   | Robot     |
- |                          |   |                       'pwmRight'      | Platform  |
- |                          +--(+)-------[ PWM ]----[ right motor ]-----+           |
- |                                                                      |           |
- |                                                                      |           |
- |                          +-[ Gyroscope     ]-------------------------+           |
- +----[ Kalman filter ]-----+                                           |           |
-                            +-[ Accelerometer ]-------------------------+           |
-                                                                        |           |
-                                                                        +-----------+
-```
-
+- **Tilt PD** loop to stabilize platform in erect position vs '0' degrees set-point
+- **Position PID** loop to stabilize platform to current location vs '0' move set-point
 

@@ -121,7 +121,7 @@
 #define     KP              0.0     // PID constants
 #define     KI              0.0
 #define     KD              0.0
-#define     MAX_INTEG_AN    100.0
+#define     MAX_INTEG_AN    30.0
 #define     TILT_OFFSET     2.0     // offset for MPU-6050 mounting and frame alignment in [deg]
 #define     PID_ANGLE_LIM   30.0    // stop running PID outside this angle in [deg]
 
@@ -135,7 +135,7 @@
 #define     CP              0.0
 #define     CI              0.0
 #define     CD              0.0
-#define     MAX_INTEG_POS   100.0
+#define     MAX_INTEG_POS   0.25
 
 // kalman filter definitions
 #define     PID_LOOP_TIME   ((float)(1.0/(float)PID_FREQ))
@@ -420,11 +420,11 @@ void printfloat(float val)
 
     d1 = (int) val;
     f2 = val - d1;
-    d2 = (int) (f2 * 1000.0);
+    d2 = (int) (f2 * 10000.0);
     sig = (val < 0) ? '-' : '+';
     d1 = abs(d1);
     d2 = abs(d2);
-    vprintfunc("%c%d.%03d", sig, d1, d2);
+    vprintfunc("%c%d.%04d", sig, d1, d2);
 }
 
 /* ----------------------------------------------------------------------------
@@ -698,7 +698,7 @@ ISR(TIMER1_COMPA_vect)
     static float ang_SEk  = 0.0;
     static float ang_DEk  = 0.0;
     static float ang_Ek_1 = 0.0;
-    static float ang_Ek_2 = 0.0;
+    //static float ang_Ek_2 = 0.0;
     static float ang_Uk   = 0.0;
 
     // Orientation PID variables
@@ -710,7 +710,6 @@ ISR(TIMER1_COMPA_vect)
     static float pos_DEk  = 0.0;
     static float pos_Ek_1 = 0.0;
     static float pos_Uk   = 0.0;
-    static int   nPrevRightClicks = 0, nPrevLeftClicks = 0;
 
     // general PID variables
     static float Uk;
@@ -728,14 +727,9 @@ ISR(TIMER1_COMPA_vect)
         /* Odometry PID section: position, velocity, and orientation
          */
 
-/*
 		// wheel position PID
-		// calculate wheel position PID
-		pos_Ek   = 0.5 * ((float) (nRightClicks - nPrevRightClicks) +   // crude position average *ignoring rotation* around base center
-						  (float) (nLeftClicks - nPrevLeftClicks));
-		nPrevRightClicks = nRightClicks;                                // store for next round
-		nPrevLeftClicks = nLeftClicks;
-
+		// calculate wheel position PID to maintain robot position when stationary
+		pos_Ek   = 0.5 * ((float) (nRightClicks + nLeftClicks));	// crude position average *ignoring rotation* around base center
 		pos_SEk += pos_Ek;
 		pos_DEk  = (pos_Ek - pos_Ek_1);
 		pos_Ek_1 = pos_Ek;
@@ -746,10 +740,6 @@ ISR(TIMER1_COMPA_vect)
 			pos_SEk = -MAX_INTEG_POS;
 
 		pos_Uk = Cp*pos_Ek + Ci*pos_SEk + Cd*pos_DEk;
-
-		// combine PID controls for motor power
-		Uk = ang_Uk + pos_Uk;
-*/
 
         /* Gyro and accelerometer sensing and filtering
          */
@@ -806,13 +796,12 @@ ISR(TIMER1_COMPA_vect)
         Gyro_y = -1.0 * Gyro_y;         // swap polarity due to gyro orientation
         ang_Ek = kalmanFilter(pitch, Gyro_y, PID_LOOP_TIME);
 
-        /* TiltPID calculation
+        /* Tilt PID calculation
          * source: https://en.wikipedia.org/wiki/PID_controller#Discrete_implementation
          */
-        ang_Ek  += tilt_offset;         // offset for MPU-6050 mounting and frame alignment
+        ang_Ek  += (tilt_offset + pos_Uk);  // offset for MPU-6050 mounting and frame alignment
         ang_SEk += ang_Ek;              // sum of error for integral part
-        ang_DEk  = (ang_Ek - ang_Ek_2); // difference of errors for differential part
-        ang_Ek_2 = ang_Ek_1;
+        ang_DEk  = (ang_Ek - ang_Ek_1); // difference of errors for differential part
         ang_Ek_1 = ang_Ek;
 
         if ( ang_SEk > MAX_INTEG_AN )   // prevent integrator wind-up
@@ -897,15 +886,19 @@ ISR(TIMER1_COMPA_vect)
 
 #ifdef __DEBUG_PRINT__                      // if tracing is on then output some data
         vprintfunc("%u,", timerTicks);
+        printfloat(pos_Ek);
+        vprintfunc(",");
+        printfloat(pos_Uk);
+        vprintfunc("\n");
         //printfloat(pitch);
         //vprintfunc(",");
         //printfloat(Gyro_y);
         //vprintfunc(",");
-        printfloat(ang_Ek);                 // print angle value (PV = Process Variable)
+        //printfloat(ang_Ek);                 // print angle value (PV = Process Variable)
         //vprintfunc(",");
         //printfloat(Uk);                     // print control value (OP = Output)
         //vprintfunc("\n");
-        vprintfunc(",%d\n", motor_power);
+        //vprintfunc(",%d\n", motor_power);
 #endif  // trace is 'on'
     }
     else
@@ -913,6 +906,12 @@ ISR(TIMER1_COMPA_vect)
         PORTB &= MOTOR_CLR_DIR;                 // stop motors
         PORTD &= (~(STAT_RUN) | PB_PUP_INIT);   // turn off 'run' LED
         nSensorErr = 0;
+        pos_Ek_1 = 0.0;
+        pos_SEk = 0.0;
+        nRightClicks = 0;
+        nLeftClicks = 0;
+        ang_Ek_1 = 0.0;
+        ang_SEk = 0.0;
     }
 }
 
