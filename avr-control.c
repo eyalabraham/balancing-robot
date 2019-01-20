@@ -118,26 +118,36 @@
 #define     UINT2C(v)       ( (v >= 0x8000) ?  -((65535 - v) + 1) : v )  // convert to signed integer
 
 // PID constants default
-#define     KP              0.0     // PID constants
+#define     KP              550.0     // PID constants
 #define     KI              0.0
-#define     KD              0.0
+#define     KD              200.0
 #define     MAX_INTEG_AN    30.0
 #define     TILT_OFFSET     2.0     // offset for MPU-6050 mounting and frame alignment in [deg]
 #define     PID_ANGLE_LIM   30.0    // stop running PID outside this angle in [deg]
 
-// balancing PID frequency Timer1 constant (sec 15.9.2 page 126..126)
+// Balancing PID frequency Timer1 constant (sec 15.9.2 page 126..126)
 #define     PID_FREQ        50      // <------PID frequency in Hz
 #define     TIM1_FREQ_CONST ((PRE_SCALER / PID_FREQ) -1)
 #define     PRE_SCALER      7812    // 8MHz clock divided by 1024 pre scaler
 #define     LED_BLINK_RATE  2       // LED blink rate in Hz
 
-// wheel position PID
-#define     CP              0.0
-#define     CI              0.0
-#define     CD              0.0
+// Position PID constants
+#define     CP              0.001
+#define     CI              0.00003
+#define     CD              0.0002
 #define     MAX_INTEG_POS   0.25
 
-// kalman filter definitions
+// Rotation PID constants
+#define     XP              0.0
+#define     XI              0.0
+#define     XD              0.0
+#define     MAX_INTEG_ORI   60
+
+// Movement constants
+#define     MOVE_CONST      0.0     // tilt offset 0..?
+#define     ROTATE_CONST    50.0    // PWM value 0..255
+
+// Kalman filter definitions
 #define     PID_LOOP_TIME   ((float)(1.0/(float)PID_FREQ))
 
 // IO ports B and D initialization
@@ -149,13 +159,13 @@
 #define     PD_PUP_INIT     0x00    // port input pin pull-up
 #define     PD_INIT         0x00    // port initial values
 
-// interrupts INT0 and INT1 setup
+// Interrupts INT0 and INT1 setup
 #define     INTSETUP        0x0a    // trigger interrupt on falling edge
 #define     INTMASK         0x03    // enable INT0 and INT1
 #define     EXTINTENA       INTMASK // enable INT0 and INT1 'or' mask
 #define     EXTINTDIS       0xfc    // disable INT0 INT1 'and' mask
 
-// motor direction/state bit masks
+// Motor direction/state bit masks
 #define     MOTOR_CLR_RIGHT 0xfc    // clear right motor direction bits (AND mask)
 #define     MOTOR_CLR_LEFT  0x3f    // clear left motor direction bits (AND mask)
 #define     MOTOR_CLR_DIR   0x3c    // clear all direction bits (AND mask)
@@ -171,13 +181,18 @@
 #define     STAT_RUN        0x80    // toggle running status (XOR mask)
 #define     LOOP_TEST_POINT 0x04    // toggle PID loop timing test point
 
-// battery voltage macros
+// Battery voltage macros
 #define     BATT_LVL_65     164     // battery threshold levels
 #define     BATT_LVL_60     152     // for 6 x NiCd battery pile
 #define     BATT_LVL_55     139
 #define     BATT_LVL_70     177     // for LiPo batteries
 #define     BATT_CONVRT     0.0394749 // ADC0 battery voltage conversion ratio
 #define     BATT_BIAS       0.0     // bias to correct battery reading
+
+// Platform states
+#define     STATE_STAND     0
+#define     STATE_MOVE      1
+#define     STATE_ROTATE    2
 
 // UART command line processing
 #define     CLI_BUFFER      80
@@ -202,11 +217,17 @@
   set prompt <on> | <off>      - set prompt\n\
   set [<kp> | <ki> | <kd>] <n> - set balance PID constants\n\
   set [<cp> | <ci> | <cd>] <n> - set position PID constants\n\
+  set [<xp> | <xi> | <xd>] <n> - set orientation PID constants\n\
   set tilt <tilt>              - set frame tilt offset\n\
   set run <1|0>                - set run flag to 1=go, 0=stop\n\
   set dlpf <0..6>              - set MPU DLPF (=6)\n\
   set accl <0..3>              - set MPU Accel (=1)\n\
-  set gyro <0..3>              - set MPU Gyro (=1)\n"
+  set gyro <0..3>              - set MPU Gyro (=1)\n\
+  go  fwd                      - move forward\n\
+  go  bk                       - move backward\n\
+  go  cw                       - rotate clockwise\n\
+  go  ccw                      - rotate counter clockwise\n\
+  stop                         - stop all move or rotate\n"
 
 /****************************************************************************
   special function prototypes
@@ -252,12 +273,21 @@ float Gyro_y;                   // gyroscope X, TIMER1 ISR global variable
 float Accel_scale;              // accelerometer scaler
 float Gyro_scale;               // gyro scaler
 
-// angle PID formula variable
-volatile    float Kp, Ki, Kd;   // angle PID factors
+// Platform angle PID formula variable
+volatile    float Kp, Ki, Kd;
 volatile    float tilt_offset;  // platform tilt offset constant
 
-// wheel position PID formula variable
-volatile    float Cp, Ci, Cd;   // wheel position PID factors
+// Platform position PID formula variable
+volatile    float Cp, Ci, Cd;
+
+// Platform orientation PID formula variable
+volatile    float Xp, Xi, Xd;
+
+// platform movement offsets
+float move_offset = 0.0;
+float rotate_rate = 0.0;
+int   platform_state = STATE_STAND;
+int   platform_state_change = 0;
 
 // Kalman filter variable
 float Q_angle = 0.001;          // Process noise variance for the accelerometer
@@ -472,7 +502,7 @@ int process_cli(char *commandLine)
         {
             tilt_offset = atof(tokens[2]);
         }
-        // set [<kp> | <ki> | <kd> | <cp> | <ci> | <cd>] <num>   - set one of the PID constants with fixed-point number (format Q10.5)
+        // set one of the PID constants
         else if ( strcmp(tokens[1], "kp") == 0 )
         {
             Kp = atof(tokens[2]);
@@ -496,6 +526,18 @@ int process_cli(char *commandLine)
         else if ( strcmp(tokens[1], "cd") == 0 )
         {
             Cd = atof(tokens[2]);
+        }
+        else if ( strcmp(tokens[1], "xp") == 0 )
+        {
+            Xp = atof(tokens[2]);
+        }
+        else if ( strcmp(tokens[1], "xi") == 0 )
+        {
+            Xi = atof(tokens[2]);
+        }
+        else if ( strcmp(tokens[1], "xd") == 0 )
+        {
+            Xd = atof(tokens[2]);
         }
         // set run flag
         else if ( strcmp(tokens[1], "run") == 0 )
@@ -572,7 +614,7 @@ int process_cli(char *commandLine)
     }
     else if ( strcmp(tokens[0], "get") == 0 && numTokens == 2 )
     {
-        // get <kp> | <ki> | <kd> | <cp> | <ci> | <cd>  - print one of the PID constants as: fixed-point, float
+        // print one of the PID constants
         if ( strcmp(tokens[1], "kp") == 0 )
         {
             printfloat(Kp);
@@ -603,6 +645,21 @@ int process_cli(char *commandLine)
             printfloat(Cd);
             vprintfunc("\n");
         }
+        else if ( strcmp(tokens[1], "xp") == 0 )
+        {
+            printfloat(Xp);
+            vprintfunc("\n");
+        }
+        else if ( strcmp(tokens[1], "xi") == 0 )
+        {
+            printfloat(Xi);
+            vprintfunc("\n");
+        }
+        else if ( strcmp(tokens[1], "xd") == 0 )
+        {
+            printfloat(Xd);
+            vprintfunc("\n");
+        }
         // get tilt                 - print frame tilt offset value
         else if ( strcmp(tokens[1], "tilt") == 0 )
         {
@@ -623,6 +680,40 @@ int process_cli(char *commandLine)
         }
         else
             return -1;
+    }
+    else if ( strcmp(tokens[0], "go") == 0 )
+    {
+        //go fwd - move forward
+        if ( strcmp(tokens[1], "fwd") == 0 )
+        {
+        }
+        //go bk  - move backward
+        else if ( strcmp(tokens[1], "bk") == 0 )
+        {
+        }
+        //go cw  - rotate clockwise
+        else if ( strcmp(tokens[1], "cw") == 0 )
+        {
+            rotate_rate = ROTATE_CONST;
+            platform_state = STATE_ROTATE;
+            platform_state_change = 1;
+        }
+        //go ccw - rotate counter clockwise
+        else if ( strcmp(tokens[1], "ccw") == 0 )
+        {
+            rotate_rate = -ROTATE_CONST;
+            platform_state = STATE_ROTATE;
+            platform_state_change = 1;
+        }
+        else
+            return -1;
+    }
+    else if ( strcmp(tokens[0], "stop") == 0 )
+    {
+        move_offset = 0.0;
+        rotate_rate = 0.0;
+        platform_state = STATE_STAND;
+        platform_state_change = 1;
     }
     else if ( strcmp(tokens[0], "help") == 0 )
     {
@@ -698,11 +789,14 @@ ISR(TIMER1_COMPA_vect)
     static float ang_SEk  = 0.0;
     static float ang_DEk  = 0.0;
     static float ang_Ek_1 = 0.0;
-    //static float ang_Ek_2 = 0.0;
     static float ang_Uk   = 0.0;
 
     // Orientation PID variables
-    static float orient_Uk = 0.0;
+    static float ori_Ek = 0.0;
+    static float ori_SEk  = 0.0;
+    static float ori_DEk  = 0.0;
+    static float ori_Ek_1 = 0.0;
+    static float ori_Uk = 0.0;
 
     // wheel position PID formula variable
     static float pos_Ek;
@@ -727,19 +821,63 @@ ISR(TIMER1_COMPA_vect)
         /* Odometry PID section: position, velocity, and orientation
          */
 
-		// wheel position PID
-		// calculate wheel position PID to maintain robot position when stationary
-		pos_Ek   = 0.5 * ((float) (nRightClicks + nLeftClicks));	// crude position average *ignoring rotation* around base center
-		pos_SEk += pos_Ek;
-		pos_DEk  = (pos_Ek - pos_Ek_1);
-		pos_Ek_1 = pos_Ek;
+        if ( platform_state_change )
+        {
+            nRightClicks = 0;
+            nLeftClicks = 0;
+            pos_SEk = 0.0;
+            pos_Ek_1 = 0.0;
+            pos_Uk = 0.0;
+            ori_SEk = 0.0;
+            ori_Ek_1 = 0.0;
+            ori_Uk = 0.0;
+            platform_state_change = 0;
+        }
 
-		if ( pos_SEk > MAX_INTEG_POS )  // prevent integrator wind-up
-			pos_SEk = MAX_INTEG_POS;
-		if ( pos_SEk < -MAX_INTEG_POS )
-			pos_SEk = -MAX_INTEG_POS;
+        // Wheel position PID
+        // Calculate wheel position PID to maintain robot position when stationary
+        if ( platform_state == STATE_STAND )
+        {
+            pos_Ek = 0.5 * ((float) (nRightClicks + nLeftClicks));    // crude position average *ignoring rotation* around base center
+            pos_SEk += pos_Ek;
+            pos_DEk  = (pos_Ek - pos_Ek_1);
+            pos_Ek_1 = pos_Ek;
 
-		pos_Uk = Cp*pos_Ek + Ci*pos_SEk + Cd*pos_DEk;
+            if ( pos_SEk > MAX_INTEG_POS )
+                pos_SEk = MAX_INTEG_POS;
+            if ( pos_SEk < -MAX_INTEG_POS )
+                pos_SEk = -MAX_INTEG_POS;
+
+            pos_Uk = Cp*pos_Ek + Ci*pos_SEk + Cd*pos_DEk;
+        }
+
+        // Rotate platform
+        else if ( platform_state == STATE_ROTATE )
+        {
+            ori_Ek = (float) (nRightClicks + nLeftClicks);
+            ori_SEk += ori_Ek;
+            ori_DEk = (ori_Ek - ori_Ek_1);
+            ori_Ek_1 = ori_Ek;
+
+            if ( ori_SEk > MAX_INTEG_ORI )
+                ori_SEk = MAX_INTEG_ORI;
+            if ( ori_SEk < -MAX_INTEG_ORI )
+                ori_SEk = -MAX_INTEG_ORI;
+
+            ori_Uk = Xp*ori_Ek + Xi*ori_SEk + Xd*ori_DEk;
+        }
+
+        // Platform linear move
+        else if ( platform_state == STATE_MOVE )
+        {
+        }
+
+        // Safety
+        else
+        {
+            runFlag = 0;
+        }
+
 
         /* Gyro and accelerometer sensing and filtering
          */
@@ -819,14 +957,14 @@ ISR(TIMER1_COMPA_vect)
         motor_dir = 0;
 
         // Calculate ** left ** motor PWM settings from PID outputs
-        Uk = ang_Uk - orient_Uk;
+        Uk = ang_Uk - rotate_rate + ori_Uk;
 
         if ( Uk > 255.0 )
-        	motor_power = 255;
+            motor_power = 255;
         else if ( Uk < -255.0 )
-        	motor_power = -255;
+            motor_power = -255;
         else
-        	motor_power = round(Uk);
+            motor_power = round(Uk);
 
         if ( motor_power < 0 )
         {
@@ -846,14 +984,14 @@ ISR(TIMER1_COMPA_vect)
         pwmLeft = ((uint8_t) abs(motor_power));
 
         // Calculate ** right ** motor PWM settings from PID outputs
-        Uk = ang_Uk + orient_Uk;
+        Uk = ang_Uk + rotate_rate + ori_Uk;
 
         if ( Uk > 255.0 )
-        	motor_power = 255;
+            motor_power = 255;
         else if ( Uk < -255.0 )
-        	motor_power = -255;
+            motor_power = -255;
         else
-        	motor_power = round(Uk);
+            motor_power = round(Uk);
 
         if ( motor_power < 0 )
         {
@@ -867,7 +1005,7 @@ ISR(TIMER1_COMPA_vect)
         }
         else
         {
-        	nRightDir = 0;
+            nRightDir = 0;
         }
 
         pwmRight = ((uint8_t) abs(motor_power));
@@ -886,10 +1024,10 @@ ISR(TIMER1_COMPA_vect)
 
 #ifdef __DEBUG_PRINT__                      // if tracing is on then output some data
         vprintfunc("%u,", timerTicks);
-        printfloat(pos_Ek);
-        vprintfunc(",");
-        printfloat(pos_Uk);
-        vprintfunc("\n");
+        //printfloat(pos_Ek);
+        //vprintfunc(",");
+        //printfloat(pos_Uk);
+        //vprintfunc("\n");
         //printfloat(pitch);
         //vprintfunc(",");
         //printfloat(Gyro_y);
@@ -898,7 +1036,8 @@ ISR(TIMER1_COMPA_vect)
         //vprintfunc(",");
         //printfloat(Uk);                     // print control value (OP = Output)
         //vprintfunc("\n");
-        //vprintfunc(",%d\n", motor_power);
+        vprintfunc("%d,", (int) (nLeftDir * pwmLeft));
+        vprintfunc("%d\n", (int) ( nRightDir * pwmRight));
 #endif  // trace is 'on'
     }
     else
@@ -1000,6 +1139,14 @@ int main(void)
     printfloat((float) CD);
     vprintfunc("\n");
 
+    vprintfunc("orientation PID Xp, Xi, Xd: ");
+    printfloat((float) XP);
+    vprintfunc(", ");
+    printfloat((float) XI);
+    vprintfunc(", ");
+    printfloat((float) XD);
+    vprintfunc("\n");
+
     // bring MPU-6050 out of sleep mode
     // other setup: resolution/accuracy/filters
     i2c_m_sendByte(MPU_ADD, PWR_MGT_1, 0x08);
@@ -1023,6 +1170,10 @@ int main(void)
     Cp = (float) CP;
     Ci = (float) CI;
     Cd = (float) CD;
+
+    Xp = (float) XP;
+    Xi = (float) XI;
+    Xd = (float) XD;
 
     runFlag = 0;
 

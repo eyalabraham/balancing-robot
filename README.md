@@ -64,17 +64,26 @@ Design resource: <https://www.semanticscholar.org/paper/Movement-control-of-two-
 
 ```
                                                                +---------+
+                                                               |         |
                 +-- 'pos_Uk' --[ Position PID ]---- 'pos_Ek' --+ Encoder +------+
-                |                                              | Process +-+    |
-                |                                              +         + |    |
-                |                                              +---------+ |    |
-'tilt_offset' -(+)                                                         |    |
-                |                                                          |    |
- +- 'ang_Ek' --(+)          'orient_Uk'                                    |    |
- |              |               |                                          |    |
- |              |               |                                          |    |
- |         [ Tilt PD ]          |                                       +--+----+--+
- |              |               +---+                                   |          |
+                |                                              | Process |      |
+                |  +-- 'vel_Uk' --[ Velocity PID ]-- 'vel_Ek' -+ Block   |      |
+                |  |                                           |         +-+    |
+                |  |      [ Orientation PID ]------ 'ori_Ek' --+         | |    |
+                |  |            |   |                          |         | |    |
+                |  |            |   |                          +---------+ |    |
+                |  |            |   |                                      |    |
+            +---+--+------------+---+------+                               |    |
+            |    Control switching         |                               |    |
+            +---+---------------+---+------+                               |    |
+                |               |   |                                      |    |
+'tilt_offset' -(+)             (+)-(+)--- 'rotate_rate'                    |    |
+                |               |   |                                      |    |
+ +- 'ang_Ek' --(+)       'oril_Uk' 'orir_Uk'                               |    |
+ |              |               |   |                                      |    |
+ |              |               |   |                                      |    |
+ |         [ Tilt PD ]          |   |                                   +--+----+--+
+ |              |               |   |                                   |          |
  |           'ang_Uk'           |   |                   'pwmLeft'       |          |
  |              |           +--(-)- | ---[ PWM ]----[ left motor  ]-----+          |
  |              |           |       |                                   |          |
@@ -92,4 +101,5 @@ Design resource: <https://www.semanticscholar.org/paper/Movement-control-of-two-
 
 - **Tilt PD** loop to stabilize platform in erect position vs '0' degrees set-point
 - **Position PID** loop to stabilize platform to current location vs '0' move set-point
-
+- **Orientation PID** loop to control motor rotation while platform rotates and balances
+- **Control switching** selets the apropriate control loop for the system state 'STAND', 'ROTATE', and 'MOVE'
