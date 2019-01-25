@@ -122,7 +122,7 @@
 #define     KI              0.0
 #define     KD              200.0
 #define     MAX_INTEG_AN    30.0
-#define     TILT_OFFSET     2.0     // offset for MPU-6050 mounting and frame alignment in [deg]
+#define     TILT_OFFSET     1.7     // offset for MPU-6050 mounting and frame alignment in [deg]
 #define     PID_ANGLE_LIM   30.0    // stop running PID outside this angle in [deg]
 
 // Balancing PID frequency Timer1 constant (sec 15.9.2 page 126..126)
@@ -132,19 +132,25 @@
 #define     LED_BLINK_RATE  2       // LED blink rate in Hz
 
 // Position PID constants
-#define     CP              0.001
-#define     CI              0.00003
-#define     CD              0.0002
-#define     MAX_INTEG_POS   0.25
+#define     CP              0.0045
+#define     CI              0.002
+#define     CD              0.003
+#define     MAX_INTEG_POS   1.0
 
 // Rotation PID constants
-#define     XP              0.0
-#define     XI              0.0
-#define     XD              0.0
+#define     XP              5.5
+#define     XI              0.5
+#define     XD              2.0
 #define     MAX_INTEG_ORI   60
 
+// Platform velocity PID constants
+#define     VP              0.0
+#define     VI              0.0
+#define     VD              0.0
+#define     MAX_INTEG_VEL   1.0
+
 // Movement constants
-#define     MOVE_CONST      0.0     // tilt offset 0..?
+#define     MOVE_CONST      0.25    // tilt offset to move the platform
 #define     ROTATE_CONST    50.0    // PWM value 0..255
 
 // Kalman filter definitions
@@ -211,15 +217,22 @@
   help                         - help text\n\
   get <kp> | <ki> | <kd>       - balance PID constants\n\
   get <cp> | <ci> | <cd>       - position PID constants\n\
-  get tilt offset              - frame tilt offset\n\
+  get <xp> | <xi> | <xd>       - orientation PID constants\n\
+  get <vp> | <vi> | <vd>       - velocity PID constants\n\
+  get tilt                     - frame tilt offset\n\
+  get rotate                   - rotation rate constant\n\
+  get move                     - move rate constant\n\
   get batt                     - battery voltage\n\
   get run                      - go/no-go state\n\
   set prompt <on> | <off>      - set prompt\n\
-  set [<kp> | <ki> | <kd>] <n> - set balance PID constants\n\
-  set [<cp> | <ci> | <cd>] <n> - set position PID constants\n\
-  set [<xp> | <xi> | <xd>] <n> - set orientation PID constants\n\
+  set [<kp> | <ki> | <kd>]     - set balance PID constants\n\
+  set [<cp> | <ci> | <cd>]     - set position PID constants\n\
+  set [<xp> | <xi> | <xd>]     - set orientation PID constants\n\
+  set [<vp> | <vi> | <vd>]     - set velocity PID constants\n\
   set tilt <tilt>              - set frame tilt offset\n\
   set run <1|0>                - set run flag to 1=go, 0=stop\n\
+  set rotate <rate>            - set rotation rate constant\n\
+  set move <rate>              - set move rate constant\n\
   set dlpf <0..6>              - set MPU DLPF (=6)\n\
   set accl <0..3>              - set MPU Accel (=1)\n\
   set gyro <0..3>              - set MPU Gyro (=1)\n\
@@ -283,9 +296,14 @@ volatile    float Cp, Ci, Cd;
 // Platform orientation PID formula variable
 volatile    float Xp, Xi, Xd;
 
+// Platform velocity PID formula variable
+volatile    float Vp, Vi, Vd;
+
 // platform movement offsets
 float move_offset = 0.0;
+float move_const = MOVE_CONST;
 float rotate_rate = 0.0;
+float rotate_const = ROTATE_CONST;
 int   platform_state = STATE_STAND;
 int   platform_state_change = 0;
 
@@ -502,6 +520,16 @@ int process_cli(char *commandLine)
         {
             tilt_offset = atof(tokens[2]);
         }
+        // set rotate <rate>            - set rotation rate constant
+        else if ( strcmp(tokens[1], "rotate") == 0 )
+        {
+            rotate_const = fabsf(atof(tokens[2]));
+        }
+        // set move <rate>              - set move rate constant
+        else if ( strcmp(tokens[1], "move") == 0 )
+        {
+            move_const = fabsf(atof(tokens[2]));
+        }
         // set one of the PID constants
         else if ( strcmp(tokens[1], "kp") == 0 )
         {
@@ -538,6 +566,18 @@ int process_cli(char *commandLine)
         else if ( strcmp(tokens[1], "xd") == 0 )
         {
             Xd = atof(tokens[2]);
+        }
+        else if ( strcmp(tokens[1], "vp") == 0 )
+        {
+            Vp = atof(tokens[2]);
+        }
+        else if ( strcmp(tokens[1], "vi") == 0 )
+        {
+            Vi = atof(tokens[2]);
+        }
+        else if ( strcmp(tokens[1], "vd") == 0 )
+        {
+            Vd = atof(tokens[2]);
         }
         // set run flag
         else if ( strcmp(tokens[1], "run") == 0 )
@@ -660,10 +700,37 @@ int process_cli(char *commandLine)
             printfloat(Xd);
             vprintfunc("\n");
         }
+        else if ( strcmp(tokens[1], "vp") == 0 )
+        {
+            printfloat(Vp);
+            vprintfunc("\n");
+        }
+        else if ( strcmp(tokens[1], "vi") == 0 )
+        {
+            printfloat(Vi);
+            vprintfunc("\n");
+        }
+        else if ( strcmp(tokens[1], "vd") == 0 )
+        {
+            printfloat(Vd);
+            vprintfunc("\n");
+        }
         // get tilt                 - print frame tilt offset value
         else if ( strcmp(tokens[1], "tilt") == 0 )
         {
             printfloat(tilt_offset);
+            vprintfunc("\n");
+        }
+        // get rotate                - rotation rate constant
+        else if ( strcmp(tokens[1], "rotate") == 0 )
+        {
+            printfloat(rotate_const);
+            vprintfunc("\n");
+        }
+        // get move                  - move rate constant
+        else if ( strcmp(tokens[1], "move") == 0 )
+        {
+            printfloat(move_const);
             vprintfunc("\n");
         }
         // get batt                 - battery voltage
@@ -686,22 +753,28 @@ int process_cli(char *commandLine)
         //go fwd - move forward
         if ( strcmp(tokens[1], "fwd") == 0 )
         {
+            move_offset = move_const;
+            platform_state = STATE_MOVE;
+            platform_state_change = 1;
         }
         //go bk  - move backward
         else if ( strcmp(tokens[1], "bk") == 0 )
         {
+            move_offset = -move_const;
+            platform_state = STATE_MOVE;
+            platform_state_change = 1;
         }
         //go cw  - rotate clockwise
         else if ( strcmp(tokens[1], "cw") == 0 )
         {
-            rotate_rate = ROTATE_CONST;
+            rotate_rate = rotate_const;
             platform_state = STATE_ROTATE;
             platform_state_change = 1;
         }
         //go ccw - rotate counter clockwise
         else if ( strcmp(tokens[1], "ccw") == 0 )
         {
-            rotate_rate = -ROTATE_CONST;
+            rotate_rate = -rotate_const;
             platform_state = STATE_ROTATE;
             platform_state_change = 1;
         }
@@ -805,6 +878,13 @@ ISR(TIMER1_COMPA_vect)
     static float pos_Ek_1 = 0.0;
     static float pos_Uk   = 0.0;
 
+    // wheel velocity PID formula variable
+    static float vel_Ek;
+    static float vel_SEk  = 0.0;
+    static float vel_DEk  = 0.0;
+    static float vel_Ek_1 = 0.0;
+    static float vel_Uk   = 0.0;
+
     // general PID variables
     static float Uk;
     static uint8_t pwmRight, pwmLeft, motor_dir, port_b, tmp;
@@ -831,6 +911,9 @@ ISR(TIMER1_COMPA_vect)
             ori_SEk = 0.0;
             ori_Ek_1 = 0.0;
             ori_Uk = 0.0;
+            vel_SEk = 0.0;
+            vel_Ek_1 = 0.0;
+            vel_Uk = 0.0;
             platform_state_change = 0;
         }
 
@@ -870,6 +953,20 @@ ISR(TIMER1_COMPA_vect)
         // Platform linear move
         else if ( platform_state == STATE_MOVE )
         {
+            vel_Ek = move_offset - (0.5 * ((float) (nRightClicks + nLeftClicks)));
+            nRightClicks = 0;
+            nLeftClicks = 0;
+
+            vel_SEk += vel_Ek;
+            vel_DEk = (vel_Ek - vel_Ek_1);
+            vel_Ek_1 = vel_Ek;
+
+            if ( vel_SEk > MAX_INTEG_VEL )
+                vel_SEk = MAX_INTEG_VEL;
+            if ( vel_SEk < -MAX_INTEG_VEL )
+                vel_SEk = -MAX_INTEG_VEL;
+
+            vel_Uk = Vp*vel_Ek + Vi*vel_SEk + Vd*vel_DEk;
         }
 
         // Safety
@@ -877,7 +974,6 @@ ISR(TIMER1_COMPA_vect)
         {
             runFlag = 0;
         }
-
 
         /* Gyro and accelerometer sensing and filtering
          */
@@ -913,7 +1009,7 @@ ISR(TIMER1_COMPA_vect)
 
         // check if platform is out of control-limits and inhibit PID
         // if it is, then blink 'run' LED and exit PID control loop
-        if ( abs(pitch) > PID_ANGLE_LIM )
+        if ( fabsf(pitch) > PID_ANGLE_LIM )
         {
             blink++;
             if ( blink >= (PID_FREQ / LED_BLINK_RATE) )
@@ -937,7 +1033,7 @@ ISR(TIMER1_COMPA_vect)
         /* Tilt PID calculation
          * source: https://en.wikipedia.org/wiki/PID_controller#Discrete_implementation
          */
-        ang_Ek  += (tilt_offset + pos_Uk);  // offset for MPU-6050 mounting and frame alignment
+        ang_Ek  += (tilt_offset + pos_Uk + vel_Uk);  // offset for MPU-6050 mounting and fwd/rev velocity
         ang_SEk += ang_Ek;              // sum of error for integral part
         ang_DEk  = (ang_Ek - ang_Ek_1); // difference of errors for differential part
         ang_Ek_1 = ang_Ek;
@@ -1024,7 +1120,7 @@ ISR(TIMER1_COMPA_vect)
 
 #ifdef __DEBUG_PRINT__                      // if tracing is on then output some data
         vprintfunc("%u,", timerTicks);
-        //printfloat(pos_Ek);
+        printfloat(vel_Ek);
         //vprintfunc(",");
         //printfloat(pos_Uk);
         //vprintfunc("\n");
@@ -1036,8 +1132,9 @@ ISR(TIMER1_COMPA_vect)
         //vprintfunc(",");
         //printfloat(Uk);                     // print control value (OP = Output)
         //vprintfunc("\n");
-        vprintfunc("%d,", (int) (nLeftDir * pwmLeft));
-        vprintfunc("%d\n", (int) ( nRightDir * pwmRight));
+        //vprintfunc("%d,", (int) (nLeftDir * pwmLeft));
+        //vprintfunc("%d\n", (int) ( nRightDir * pwmRight));
+        vprintfunc("\n");
 #endif  // trace is 'on'
     }
     else
@@ -1051,6 +1148,10 @@ ISR(TIMER1_COMPA_vect)
         nLeftClicks = 0;
         ang_Ek_1 = 0.0;
         ang_SEk = 0.0;
+        move_offset = 0.0;
+        rotate_rate = 0.0;
+        platform_state = STATE_STAND;
+        platform_state_change = 1;
     }
 }
 
@@ -1147,6 +1248,14 @@ int main(void)
     printfloat((float) XD);
     vprintfunc("\n");
 
+    vprintfunc("velocity PID Vp, Vi, Vd: ");
+    printfloat((float) VP);
+    vprintfunc(", ");
+    printfloat((float) VI);
+    vprintfunc(", ");
+    printfloat((float) VD);
+    vprintfunc("\n");
+
     // bring MPU-6050 out of sleep mode
     // other setup: resolution/accuracy/filters
     i2c_m_sendByte(MPU_ADD, PWR_MGT_1, 0x08);
@@ -1174,6 +1283,10 @@ int main(void)
     Xp = (float) XP;
     Xi = (float) XI;
     Xd = (float) XD;
+
+    Vp = (float) VP;
+    Vi = (float) VI;
+    Vd = (float) VD;
 
     runFlag = 0;
 

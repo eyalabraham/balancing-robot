@@ -63,23 +63,23 @@ Steps 1 to 3 are executed in a 50Hz ISR and step 4 is the main-loop program sect
 Design resource: <https://www.semanticscholar.org/paper/Movement-control-of-two-wheels-balancing-robot-PID-Pratama-Binugroho/d5ffbb30b6e7c6b8e39906fa08703af238be4336>
 
 ```
-                                                               +---------+
-                                                               |         |
-                +-- 'pos_Uk' --[ Position PID ]---- 'pos_Ek' --+ Encoder +------+
-                |                                              | Process |      |
-                |  +-- 'vel_Uk' --[ Velocity PID ]-- 'vel_Ek' -+ Block   |      |
-                |  |                                           |         +-+    |
-                |  |      [ Orientation PID ]------ 'ori_Ek' --+         | |    |
-                |  |            |   |                          |         | |    |
-                |  |            |   |                          +---------+ |    |
-                |  |            |   |                                      |    |
-            +---+--+------------+---+------+                               |    |
-            |    Control switching         |                               |    |
-            +---+---------------+---+------+                               |    |
+                                               'move_offset'   +---------+
+                                                          |    |         |
+          +---- 'vel_Uk' --[ Velocity PID ]-- 'vel_Ek' --(-)---+         |
+          |                                                    | Encoder |
+          |     +-- 'pos_Uk' --[ Position PID ]---- 'pos_Ek' --+ input   +------+
+          |     |                                              | process |      |
+          |     |         [ Orientation PID ]------ 'ori_Ek' --+         +-+    |
+          |     |               |                              |         | |    |
+          |     |            'ori_Uk'                          +---------+ |    |
+          |     |               |                                          |    |
+ +--------+-----+---------------+----------+                               |    |
+ |         Control Switching               |                               |    |
+ +--------------+---------------+---+------+                               |    |
                 |               |   |                                      |    |
 'tilt_offset' -(+)             (+)-(+)--- 'rotate_rate'                    |    |
                 |               |   |                                      |    |
- +- 'ang_Ek' --(+)       'oril_Uk' 'orir_Uk'                               |    |
+ +- 'ang_Ek' --(+)              |   |                                      |    |
  |              |               |   |                                      |    |
  |              |               |   |                                      |    |
  |         [ Tilt PD ]          |   |                                   +--+----+--+
@@ -102,4 +102,4 @@ Design resource: <https://www.semanticscholar.org/paper/Movement-control-of-two-
 - **Tilt PD** loop to stabilize platform in erect position vs '0' degrees set-point
 - **Position PID** loop to stabilize platform to current location vs '0' move set-point
 - **Orientation PID** loop to control motor rotation while platform rotates and balances
-- **Control switching** selets the apropriate control loop for the system state 'STAND', 'ROTATE', and 'MOVE'
+- **Control switching** selects the appropriate control loop for the system state 'STAND', 'ROTATE', and 'MOVE'
