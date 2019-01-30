@@ -74,7 +74,7 @@ cp      +20.0
 ci      +0.0
 cd      +5.0
 
-stable balance with new gearing. January 6, 2019
+stable balance with new 5:1 gearing. January 6, 2019
 PID loop @ 50Hz. DAGU motors with wheel encoders
 tilt    +1.7
 kp      +550.00
@@ -93,16 +93,16 @@ vp      +0.0
 vd      +0.0
 vi      +0.0
 
-stable balance with new gearing and half height. January 24, 2019
+stable balance with new 5:1 gearing. January 29, 2019
 PID loop @ 50Hz. DAGU motors with wheel encoders
 tilt    +1.7
-kp      +300.00
+kp      +550.00
 kd      +200.00
 ki      +0.000
 
-cp      +0.0045
-cd      +0.003
-ci      +0.002
+cp      +0.004
+cd      +0.002
+ci      +0.001
 
 xp      +5.5
 xd      +2.0
@@ -111,3 +111,4 @@ xi      +0.5
 vp      +0.0
 vd      +0.0
 vi      +0.0
+

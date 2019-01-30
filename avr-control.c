@@ -86,10 +86,6 @@
 #include    "i2c_drv.h"
 #include    "uart_drv.h"
 
-// debug print to UART port definition
-// UART is assumed to be defined and initialized
-//#define     __DEBUG_PRINT__
-
 // Gyro/Accel I2C definitions
 #define     MPU_ADD         0x68    // I2C bus address for Gyro/Accel unit
 
@@ -132,10 +128,11 @@
 #define     LED_BLINK_RATE  2       // LED blink rate in Hz
 
 // Position PID constants
-#define     CP              0.0045
-#define     CI              0.002
-#define     CD              0.003
-#define     MAX_INTEG_POS   1.0
+#define     CP              0.004
+#define     CI              0.00002
+#define     CD              0.002
+#define     MAX_INTEG_POS   2500.0
+#define     POS_PID_RATE_DIV 5
 
 // Rotation PID constants
 #define     XP              5.5
@@ -225,6 +222,7 @@
   get batt                     - battery voltage\n\
   get run                      - go/no-go state\n\
   set prompt <on> | <off>      - set prompt\n\
+  set debug <on> | <off>      - set debug mode\n\
   set [<kp> | <ki> | <kd>]     - set balance PID constants\n\
   set [<cp> | <ci> | <cd>]     - set position PID constants\n\
   set [<xp> | <xi> | <xd>]     - set orientation PID constants\n\
@@ -258,7 +256,8 @@ volatile    int     nRightDir = 0;      // motor turn direction (1 = Fwd, -1 = B
 volatile    int     nLeftDir = 0;
 volatile    uint8_t uBattery = 0;       // battery voltage read from ADC
 volatile    int     nSensorErr = 0;     // MPU-6050 read error
-volatile    uint8_t runFlag = 0;        // run flag reflecting the go/no-go switch state
+volatile    int     runFlag = 0;        // run flag reflecting the go/no-go switch state
+volatile    int     debug_on = 0;
 int         nDoPrompt = 1;              // print prompt
 
 // union to allow register burst read
@@ -514,6 +513,14 @@ int process_cli(char *commandLine)
                 nDoPrompt = 1;
             else
                 nDoPrompt = 0;
+        }
+        // set debug <on> | <off>  - set debug mode
+        if ( strcmp(tokens[1], "debug") == 0 )
+        {
+            if ( strcmp(tokens[2], "on") == 0 )
+                debug_on = 1;
+            else
+                debug_on = 0;
         }
         // set tilt <tilt>          - set frame tilt offset level
         else if ( strcmp(tokens[1], "tilt") == 0 )
@@ -877,6 +884,7 @@ ISR(TIMER1_COMPA_vect)
     static float pos_DEk  = 0.0;
     static float pos_Ek_1 = 0.0;
     static float pos_Uk   = 0.0;
+    static int   pos_pid_rate_div = 0;
 
     // wheel velocity PID formula variable
     static float vel_Ek;
@@ -915,23 +923,30 @@ ISR(TIMER1_COMPA_vect)
             vel_Ek_1 = 0.0;
             vel_Uk = 0.0;
             platform_state_change = 0;
+            pos_pid_rate_div = 0;
         }
 
         // Wheel position PID
         // Calculate wheel position PID to maintain robot position when stationary
         if ( platform_state == STATE_STAND )
         {
-            pos_Ek = 0.5 * ((float) (nRightClicks + nLeftClicks));    // crude position average *ignoring rotation* around base center
-            pos_SEk += pos_Ek;
-            pos_DEk  = (pos_Ek - pos_Ek_1);
-            pos_Ek_1 = pos_Ek;
+            pos_pid_rate_div++;
+            if ( pos_pid_rate_div == POS_PID_RATE_DIV )
+            {
+                pos_pid_rate_div = 0;
 
-            if ( pos_SEk > MAX_INTEG_POS )
-                pos_SEk = MAX_INTEG_POS;
-            if ( pos_SEk < -MAX_INTEG_POS )
-                pos_SEk = -MAX_INTEG_POS;
+                pos_Ek = 0.5 * ((float) (nRightClicks + nLeftClicks));    // crude position average *ignoring rotation* around base center
+                pos_SEk += pos_Ek;
+                pos_DEk  = (pos_Ek - pos_Ek_1);
+                pos_Ek_1 = pos_Ek;
 
-            pos_Uk = Cp*pos_Ek + Ci*pos_SEk + Cd*pos_DEk;
+                if ( pos_SEk > MAX_INTEG_POS )
+                    pos_SEk = MAX_INTEG_POS;
+                if ( pos_SEk < -MAX_INTEG_POS )
+                    pos_SEk = -MAX_INTEG_POS;
+
+                pos_Uk = Cp*pos_Ek + Ci*pos_SEk + Cd*pos_DEk;
+            }
         }
 
         // Rotate platform
@@ -1118,24 +1133,16 @@ ISR(TIMER1_COMPA_vect)
         // toggle cycle-test signal
         PORTB ^= LOOP_TEST_POINT;
 
-#ifdef __DEBUG_PRINT__                      // if tracing is on then output some data
-        vprintfunc("%u,", timerTicks);
-        printfloat(vel_Ek);
-        //vprintfunc(",");
-        //printfloat(pos_Uk);
-        //vprintfunc("\n");
-        //printfloat(pitch);
-        //vprintfunc(",");
-        //printfloat(Gyro_y);
-        //vprintfunc(",");
-        //printfloat(ang_Ek);                 // print angle value (PV = Process Variable)
-        //vprintfunc(",");
-        //printfloat(Uk);                     // print control value (OP = Output)
-        //vprintfunc("\n");
-        //vprintfunc("%d,", (int) (nLeftDir * pwmLeft));
-        //vprintfunc("%d\n", (int) ( nRightDir * pwmRight));
-        vprintfunc("\n");
-#endif  // trace is 'on'
+        if ( debug_on )
+        {
+            vprintfunc("%u,", timerTicks);
+            printfloat(pos_Ek);
+            vprintfunc(",");
+            printfloat(pos_Uk);
+            //vprintfunc(",%d", (int) (nLeftDir * pwmLeft));
+            //vprintfunc(,"%d", (int) ( nRightDir * pwmRight));
+            vprintfunc("\n");
+        }
     }
     else
     {

@@ -23,6 +23,8 @@
   UART defines
 ****************************************************************************/
 #define     UART_BUFF_LEN   32  // 32 characters in UART input buffer
+#define     UART_BAUD_19200 51  // UBRR0 values for 8MHz clock and U2X0 set
+#define     UART_BAUD_38400 25
 
 /****************************************************************************
   Globals
@@ -43,7 +45,7 @@ void uart_initialize()
     UCSR0A = _BV(U2X0);                 // double baud rate (sec 19.10 p.195)
     UCSR0B = _BV(RXCIE0) | _BV(RXEN0) | _BV(TXEN0);   // enable Tx and Rx
     UCSR0C = _BV(UCSZ01) | _BV(UCSZ00); // 8 data bits, 1 stop, no parity
-    UBRR0 = 51;                         // 19200 baud with the lowest error
+    UBRR0 = UART_BAUD_38400;            // baud with the lowest error
 
     inIndex = 0;
     outIndex = 0;
